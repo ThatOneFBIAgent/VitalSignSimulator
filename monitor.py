@@ -234,6 +234,7 @@ class Monitor:
         self.sweep_speed = 225  # pixels per second
         self.show_ui = True
         self.show_grid = True
+        self.fullscreen = False
 
         # Heart blink
         self.heart_on = False
@@ -600,8 +601,8 @@ class Monitor:
                     elif event.key == pygame.K_g:
                         self.show_grid = not self.show_grid
                     elif event.key == pygame.K_F11:
-                        fullscreen = not fullscreen
-                        if fullscreen:
+                        self.fullscreen = not self.fullscreen
+                        if self.fullscreen:
                             self.screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
                         else:
                             self.screen = pygame.display.set_mode((1280, 720), pygame.RESIZABLE)
