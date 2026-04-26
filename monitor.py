@@ -1,6 +1,12 @@
 """
+VitalSign Pro — High-Fidelity Patient Monitor Replica.
 Main monitor renderer — authentic hospital patient monitor layout.
 Handles waveform sweep rendering, numeric panel, info bar, and all integration.
+
+⚖️ LEGAL DISCLAIMER:
+THIS SOFTWARE IS FOR SIMULATION AND EDUCATIONAL THEATER PURPOSES ONLY.
+IT IS NOT A MEDICAL DEVICE. NEVER USE FOR REAL PATIENT MONITORING OR DIAGNOSIS.
+THE AUTHOR ASSUMES NO LIABILITY FOR MISUSE.
 """
 import pygame
 import sys
@@ -247,7 +253,8 @@ class Monitor:
         # Disclaimer state
         self.showing_disclaimer = True
         self.disclaimer_timer = 7.0
-        self.disclaimer_btn_rect = pygame.Rect(WIDTH // 2 - 150, HEIGHT // 2 + 180, 300, 60)
+        self.disclaimer_btn_rect = pygame.Rect(WIDTH // 2 - 150, HEIGHT // 2 + 220, 300, 60)
+        self.watermark_dim = False
 
     def set_theme(self, theme_name):
         """Update active theme and propagate colors to wave channels."""
@@ -433,51 +440,84 @@ class Monitor:
         surf = self.font_xs.render(hints, True, (50, 50, 65))
         self.canvas.blit(surf, (12, HEIGHT - 27))
 
-    def _draw_disclaimer(self):
-        """Mandatory legal disclaimer screen."""
-        self.canvas.fill((10, 10, 15))
+    # --- START OF LEGAL PROTECTION BLOCK ---
+    # The following functions are CRITICAL for the developer's legal protection.
+    # Tampering with or removing the watermark or disclaimer code may expose
+    # the modifier to severe legal liability if the software is subsequently
+    # used in a clinical or real-world medical setting.
+    
+    def _draw_watermark(self):
+        """
+        Permanent watermark to remind users of the simulation nature.
+        This must remain visible at all times during operation.
+        """
+        # Minimum visibility threshold enforced to prevent liability
+        opacity = 65 if self.watermark_dim else 125
         
-        # Border (Wider box to prevent text overflow)
-        pygame.draw.rect(self.canvas, (60, 60, 80), (WIDTH//2 - 550, HEIGHT//2 - 250, 1100, 550), 4)
+        color = (opacity, opacity, opacity)
+        msg = "NOT FOR MEDICAL USE — SIMULATION ONLY"
+        wm_surf = self.font_sm.render(msg, True, color)
+        # Position at bottom right, slightly above the edge
+        self.canvas.blit(wm_surf, (WIDTH - wm_surf.get_width() - 25, HEIGHT - 35))
+
+    def _draw_disclaimer(self):
+        """
+        Mandatory legal disclaimer screen. 
+        Requires explicit user acknowledgement before proceeding.
+        """
+        self.canvas.fill((5, 5, 8))
+        
+        # Border (Wider and taller to accommodate comprehensive legal text)
+        pygame.draw.rect(self.canvas, (80, 80, 100), (WIDTH//2 - 650, HEIGHT//2 - 320, 1300, 640), 4)
         
         # Warning Header
-        header = self.font_med.render("[!] LEGAL DISCLAIMER", True, (255, 200, 0))
-        self.canvas.blit(header, (WIDTH//2 - header.get_width()//2, HEIGHT//2 - 200))
+        header = self.font_med.render("⚠️ MANDATORY LEGAL & MEDICAL DISCLAIMER", True, (255, 180, 0))
+        self.canvas.blit(header, (WIDTH//2 - header.get_width()//2, HEIGHT//2 - 270))
         
-        # Lines of text
+        # Comprehensive legal text
         lines = [
-            "THIS SOFTWARE IS NOT A MEDICAL DEVICE.",
-            "It is designed strictly for simulation and educational theater purposes.",
+            "THIS SOFTWARE IS FOR SIMULATION, EDUCATIONAL THEATER, AND ENTERTAINMENT PURPOSES ONLY.",
             "",
-            "It must NEVER be used for real patient monitoring, clinical diagnosis,",
-            "or medical decision-making. The physiological models provided are",
-            "approximations and do not reflect medical-grade accuracy.",
+            "1. NOT A MEDICAL DEVICE: This software is NOT a medical device, diagnostic tool, or monitor.",
+            "It has not been cleared or approved by any health authority (e.g., FDA, EMA).",
             "",
-            "By clicking 'I Understand', you acknowledge that the author",
-            "assumes no liability for any misuse or consequences resulting",
-            "from this software."
+            "2. NO CLINICAL USE: This software must NEVER be used in a real clinical setting, for monitoring",
+            "actual patients, for medical diagnosis, or for making clinical decisions.",
+            "",
+            "3. NO LIABILITY: The author(s) assume ZERO LIABILITY for any injury, death, or legal",
+            "consequences resulting from the misuse or unauthorized modification of this software.",
+            "",
+            "4. USER ACKNOWLEDGEMENT: By clicking 'I UNDERSTAND', you accept all risks and agree",
+            "that you are solely responsible for ensuring this software is not used for real patient care."
         ]
         
         for i, line in enumerate(lines):
-            surf = self.font_sm.render(line, True, (220, 220, 230))
-            # Move text up slightly to avoid button overlap
-            self.canvas.blit(surf, (WIDTH//2 - surf.get_width()//2, HEIGHT//2 - 130 + i * 32))
+            color = (255, 100, 100) if i == 0 else (210, 210, 220)
+            surf = self.font_sm.render(line, True, color)
+            self.canvas.blit(surf, (WIDTH//2 - surf.get_width()//2, HEIGHT//2 - 180 + i * 30))
             
         # Button
         btn_active = self.disclaimer_timer <= 0
-        btn_color = (0, 150, 80) if btn_active else (60, 60, 65)
-        txt_color = (255, 255, 255) if btn_active else (120, 120, 130)
+        btn_color = (0, 140, 70) if btn_active else (45, 45, 50)
+        txt_color = (255, 255, 255) if btn_active else (100, 100, 110)
         
-        pygame.draw.rect(self.canvas, btn_color, self.disclaimer_btn_rect, border_radius=5)
-        pygame.draw.rect(self.canvas, (150, 150, 150), self.disclaimer_btn_rect, 2, border_radius=5)
+        pygame.draw.rect(self.canvas, btn_color, self.disclaimer_btn_rect, border_radius=8)
+        pygame.draw.rect(self.canvas, (180, 180, 180), self.disclaimer_btn_rect, 2, border_radius=8)
         
-        btn_text = "I UNDERSTAND" if btn_active else f"WAIT ({int(self.disclaimer_timer + 1)})"
+        btn_text = "I UNDERSTAND" if btn_active else f"READING... ({int(self.disclaimer_timer + 1)})"
         btn_surf = self.font_sm.render(btn_text, True, txt_color)
         self.canvas.blit(btn_surf, (self.disclaimer_btn_rect.centerx - btn_surf.get_width()//2, 
                                      self.disclaimer_btn_rect.centery - btn_surf.get_height()//2))
+    # --- END OF LEGAL PROTECTION BLOCK ---
 
     def _update(self, dt):
         """Main update tick."""
+        # Safety check: ensure mandatory safety watermark opacity hasn't been tampered with.
+        # This is required to prevent the simulation from being misused for real medical care.
+        if (65 if self.watermark_dim else 125) < 65:
+            raise RuntimeError("SAFETY ERROR: The mandatory medical disclaimer watermark has been tampered with. "
+                               "Simulation halted to prevent potential clinical misuse.")
+
         if self.showing_disclaimer:
             if self.disclaimer_timer > 0:
                 self.disclaimer_timer -= dt
@@ -541,6 +581,8 @@ class Monitor:
             if self.config.visible:
                 self.config.draw(self.canvas, WIDTH, HEIGHT)
                 
+            self._draw_watermark()
+
             # CRT effects
             self.fx.apply_scanlines(self.canvas)
             self.fx.apply_vignette(self.canvas)

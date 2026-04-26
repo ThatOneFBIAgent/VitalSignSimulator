@@ -348,6 +348,12 @@ class ConfigMenu:
                 getter=lambda: self.monitor.bed_name,
                 setter=lambda v: setattr(self.monitor, 'bed_name', v)
             ))
+            
+            items.append(ToggleItem(
+                "wm_dim", "Dim Mandatory Watermark",
+                getter=lambda: self.monitor.watermark_dim,
+                setter=lambda v: setattr(self.monitor, 'watermark_dim', v)
+            ))
 
         for key, label in [
             ("scanlines", "CRT Scanlines"),

@@ -9,12 +9,18 @@
 
 ---
 
-### ⚠️ CRITICAL MEDICAL DISCLAIMER
-**THIS SOFTWARE IS FOR SIMULATION AND EDUCATIONAL PURPOSES ONLY.**  
-It is NOT a medical device. It should NEVER be used for actual patient monitoring, diagnosis, or clinical decision-making. The physiological models are approximations for training purposes and do not represent medical-grade accuracy.
-By using this software, you agree to use it responsibly and ethically.
+### ⚖️ MANDATORY LEGAL & MEDICAL DISCLAIMER
+
+**THIS SOFTWARE IS FOR SIMULATION, EDUCATIONAL THEATER, AND ENTERTAINMENT PURPOSES ONLY.**
+
+1. **NOT A MEDICAL DEVICE**: VitalSign Pro is **NOT** a medical device, diagnostic tool, or clinical monitoring system. It has not been cleared or approved by any health authority (e.g., FDA, EMA).
+2. **NO CLINICAL USE**: This software must **NEVER** be used in a real clinical setting, for monitoring actual patients, for medical diagnosis, or for making life-altering medical decisions.
+3. **APPROXIMATION ONLY**: The physiological models, waveforms, and data generated are mathematical approximations designed for training scenarios. They do not represent real-time medical accuracy.
+4. **NO LIABILITY**: The author(s) and contributors of this project assume **ZERO LIABILITY** for any injury, death, property damage, or legal consequences resulting from the misuse of this software in real-world medical situations or any other context.
+5. **USER ASSUMPTION OF RISK**: By running this software, you acknowledge and agree that you use it at your own risk and that you are solely responsible for ensuring it is not used for real patient care.
 
 ---
+
 
 ## ✨ Key Features
 - **Dynamic Waveforms**: Real-time rendering of Lead II ECG, Plethysmograph (SpO2), Respiration, Arterial Blood Pressure (ABP), and EtCO2.

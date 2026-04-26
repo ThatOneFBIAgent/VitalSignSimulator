@@ -2,6 +2,11 @@
 Physiological simulation engine.
 Generates ECG, SpO2 Pleth, Respiration, ABP, and Capnography waveforms.
 Supports multiple ECG rhythm modes: Normal Sinus, AFib, PVCs, VTach, VFib.
+
+⚖️ LEGAL DISCLAIMER:
+THIS SOFTWARE IS FOR SIMULATION AND EDUCATIONAL THEATER PURPOSES ONLY.
+IT IS NOT A MEDICAL DEVICE. NEVER USE FOR REAL PATIENT MONITORING OR DIAGNOSIS.
+THE AUTHOR ASSUMES NO LIABILITY FOR MISUSE.
 """
 import numpy as np
 import random
