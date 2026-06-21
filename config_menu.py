@@ -4,7 +4,7 @@ Opened with TAB, navigated with arrow keys.
 Sections: Vitals | Alarms | Display | Presets
 """
 import pygame
-from simulation import ECG_RHYTHMS, RESP_PATTERNS
+from simulation import ECG_RHYTHMS, RESP_PATTERNS, ECG_DISPLAY_LEADS
 
 # ─── Color constants ───
 C_BG       = (18, 18, 24, 220)
@@ -16,72 +16,7 @@ C_TAB_ACT  = (0, 255, 130)
 C_TAB_INACT= (100, 100, 120)
 C_DIVIDER  = (50, 50, 70)
 
-PRESETS = {
-    "Healthy Adult": {
-        "hr": 72, "spo2": 98, "rr": 16,
-        "bp_sys": 120, "bp_dia": 80, "temp": 36.8, "etco2": 38,
-    },
-    "Tachycardia": {
-        "hr": 155, "spo2": 95, "rr": 22,
-        "bp_sys": 140, "bp_dia": 90, "temp": 37.2, "etco2": 32,
-    },
-    "Bradycardia": {
-        "hr": 38, "spo2": 96, "rr": 12,
-        "bp_sys": 100, "bp_dia": 65, "temp": 36.5, "etco2": 40,
-    },
-    "Hypoxia": {
-        "hr": 115, "spo2": 82, "rr": 28,
-        "bp_sys": 130, "bp_dia": 85, "temp": 37.0, "etco2": 28,
-    },
-    "Sepsis": {
-        "hr": 125, "spo2": 91, "rr": 26,
-        "bp_sys": 85, "bp_dia": 50, "temp": 39.2, "etco2": 30,
-    },
-    "Hypertensive Crisis": {
-        "hr": 95, "spo2": 97, "rr": 18,
-        "bp_sys": 210, "bp_dia": 130, "temp": 37.0, "etco2": 36,
-    },
-    "Cardiac Arrest": {
-        "hr": 0, "spo2": 50, "rr": 0,
-        "bp_sys": 20, "bp_dia": 10, "temp": 35.8, "etco2": 0,
-    },
-    "Anaphylaxis": {
-        "hr": 140, "spo2": 88, "rr": 32,
-        "bp_sys": 70, "bp_dia": 40, "temp": 37.5, "etco2": 45,
-    },
-    "Hypovolemic Shock": {
-        "hr": 135, "spo2": 94, "rr": 24,
-        "bp_sys": 75, "bp_dia": 45, "temp": 35.5, "etco2": 30,
-    },
-    "Opioid Overdose": {
-        "hr": 55, "spo2": 80, "rr": 6,
-        "bp_sys": 95, "bp_dia": 60, "temp": 36.0, "etco2": 55,
-    },
-    "Asthma Exacerbation": {
-        "hr": 130, "spo2": 89, "rr": 35,
-        "bp_sys": 145, "bp_dia": 95, "temp": 37.4, "etco2": 25,
-    },
-    "Malignant Hyperthermia": {
-        "hr": 150, "spo2": 95, "rr": 30,
-        "bp_sys": 80, "bp_dia": 45, "temp": 40.5, "etco2": 80,
-    },
-    "Pulmonary Embolism": {
-        "hr": 125, "spo2": 84, "rr": 28,
-        "bp_sys": 90, "bp_dia": 55, "temp": 37.1, "etco2": 20,
-    },
-    "Cushing's Triad (ICP)": {
-        "hr": 42, "spo2": 98, "rr": 8,
-        "bp_sys": 210, "bp_dia": 110, "temp": 36.8, "etco2": 45,
-    },
-    "SVT": {
-        "hr": 210, "spo2": 97, "rr": 22,
-        "bp_sys": 95, "bp_dia": 60, "temp": 37.0, "etco2": 35,
-    },
-    "Mild Hypothermia": {
-        "hr": 50, "spo2": 95, "rr": 10,
-        "bp_sys": 105, "bp_dia": 65, "temp": 34.0, "etco2": 42,
-    }
-}
+from constants import PRESETS
 
 
 class ConfigItem:
@@ -215,6 +150,11 @@ class ConfigMenu:
             getter=lambda: s.ecg_rhythm,
             setter=lambda v: setattr(s, 'ecg_rhythm', v),
         ))
+        items.append(CycleItem(
+            "ecg_display_lead", "Displayed ECG Lead", ECG_DISPLAY_LEADS,
+            getter=lambda: s.ecg_display_lead,
+            setter=lambda v: setattr(s, 'ecg_display_lead', v),
+        ))
         
         # Respiratory Pattern selector
         items.append(CycleItem(
@@ -233,6 +173,21 @@ class ConfigMenu:
             "probe_temp", "Probe: Temp Connected",
             getter=lambda: s.probe_temp,
             setter=lambda v: setattr(s, 'probe_temp', v),
+        ))
+        items.append(ToggleItem(
+            "lead_artifacts", "ECG Lead Artifacts",
+            getter=lambda: s.enable_lead_artifacts,
+            setter=lambda v: setattr(s, 'enable_lead_artifacts', v),
+        ))
+        items.append(ConfigItem(
+            "artifact_level", "ECG Artifact Level", 0.0, 1.0, 0.05, ".2f",
+            getter=lambda: s.lead_artifact_level,
+            setter=lambda v: setattr(s, 'lead_artifact_level', v),
+        ))
+        items.append(ConfigItem(
+            "etco2_variability", "EtCO2 Breath Variability", 0.0, 0.35, 0.01, ".2f",
+            getter=lambda: s.etco2_variability,
+            setter=lambda v: setattr(s, 'etco2_variability', v),
         ))
 
         for key, label, lo, hi, step, fmt in [
@@ -270,6 +225,22 @@ class ConfigMenu:
             getter=lambda: t["spo2"]["max"],
             setter=lambda v: t["spo2"].__setitem__("max", v),
         ))
+        for key, label, lo, hi in [
+            ("rr", "RR", 0, 60),
+            ("bp_sys", "BP Sys", 40, 300),
+            ("bp_dia", "BP Dia", 20, 200),
+            ("etco2", "EtCO2", 0, 100),
+        ]:
+            items.append(ConfigItem(
+                f"{key}_min", f"{label} Fluctuation Min", lo, hi, 1, ".0f",
+                getter=lambda k=key: t[k]["min"],
+                setter=lambda v, k=key: t[k].__setitem__("min", v),
+            ))
+            items.append(ConfigItem(
+                f"{key}_max", f"{label} Fluctuation Max", lo, hi, 1, ".0f",
+                getter=lambda k=key: t[k]["max"],
+                setter=lambda v, k=key: t[k].__setitem__("max", v),
+            ))
         return items
 
     def _set_vital_target(self, key, value):
@@ -324,6 +295,11 @@ class ConfigMenu:
             
         if self.monitor:
             items.append(ToggleItem(
+                "diagnostics_window", "Diagnostics Window",
+                getter=lambda: self.monitor.show_diagnostics_window,
+                setter=lambda v: self.monitor.set_diagnostics_window_visible(v)
+            ))
+            items.append(ToggleItem(
                 "show_rec", "Show 'REC' Status at Top",
                 getter=lambda: self.monitor.show_rec_status,
                 setter=lambda v: setattr(self.monitor, 'show_rec_status', v)
@@ -366,6 +342,21 @@ class ConfigMenu:
                 getter=lambda k=key: e.enabled[k],
                 setter=lambda v, k=key: e.enabled.__setitem__(k, v),
             ))
+            
+        if self.monitor:
+            items.append(CycleItem(
+                "alarm_style", "Alarm Box Style",
+                ["Red outline", "Colored outline", "Inverted red", "Inverted colored"],
+                getter=lambda: self.monitor.alarm_box_style,
+                setter=lambda v: setattr(self.monitor, 'alarm_box_style', v)
+            ))
+            
+            items.append(ToggleItem(
+                "diff_alarms", "Differentiate High/Low Values",
+                getter=lambda: self.monitor.differentiate_alarms,
+                setter=lambda v: setattr(self.monitor, 'differentiate_alarms', v)
+            ))
+            
         # Audio mute
         items.append(ToggleItem(
             "mute", "Mute Audio",

@@ -5,7 +5,7 @@
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Status](https://img.shields.io/badge/status-Production--Ready-brightgreen.svg)
 
-**VitalSign Pro** is a high-fidelity, interactive patient monitor simulation designed for clinical education, medical theater, and emergency response training. It provides a realistic representation of modern bedside monitors with dynamic physiological waveforms and a robust scenario engine.
+**VitalSign Pro** is a high-fidelity, interactive patient monitor simulation designed for clinical education, medical theater, and emergency response training. It provides a realistic representation of modern bedside monitors with dynamic physiological waveforms, a robust scenario engine, and a fully detached configuration panel for clean OBS/stream capture.
 
 ---
 
@@ -21,26 +21,40 @@
 
 ---
 
-
 ## ✨ Key Features
-- **Dynamic Waveforms**: Real-time rendering of Lead II ECG, Plethysmograph (SpO2), Respiration, Arterial Blood Pressure (ABP), and EtCO2.
-- **Scenario Macro Engine**: Scripted clinical events (Routines) with time-based keyframes to simulate complex patient deteriorations (e.g., Code Blue, RSI, Anaphylaxis).
-- **Multi-Brand Themes**: Authentic visual styles mimicking industry leaders like Philips IntelliVue, Nihon Kohden, GE Carescape, and Mindray.
-- **Interactive Alarms**: Priority-based audible and visual alarms with hysteresis and per-parameter flashing indicators.
-- **Full Customization**: Adjustable alarm limits, patient metadata (Bed/Unit/Hospital), and physiological parameters via a live configuration menu.
+
+- **Dynamic Waveforms**: Real-time 12 lead ECG, Plethysmograph (SpO2), Respiration, ABP, and EtCO2 with phosphor persistence and CRT effects.
+- **30 ECG Rhythms**: Sinus variants, SVT/IST, AFib/AFlutter/PACs, junctional rhythms, PVC patterns, VT/VFib/Torsades, AV blocks, bundle branch blocks, WPW, long QT, hyperkalemia, STEMI patterns, Asystole, and PEA.
+- **8 Respiratory Patterns**: Eupnea, Hyperpnea, Bradypnea, Tachypnea, Apnea, Cheyne-Stokes, Biot, and Kussmaul.
+- **Cascading Physiology**: Respiratory failure → hypoxia → tachycardia → cardiac arrest. Vitals interact realistically.
+- **Scenario Engine**: Time-based routines with keyframed clinical events (Code Blue, RSI, Anaphylaxis, etc.) plus a graphical Routine Editor for authoring custom TOML scenarios.
+- **16 Clinical Presets**: One-click scenarios from Healthy Adult to Cardiac Arrest, Opioid Overdose, Malignant Hyperthermia, and more.
+- **Multi-Brand Themes**: Philips-style, Nihon Kohden, GE Carescape, Mindray, Legacy CRT, and others.1
+- **Priority Alarm System**: Audible and visual alarms with hysteresis, per-parameter flashing, acknowledgement support, and hardware-synced LED diagnostic patterns.
+- **OBS-Friendly Config Panel**: Fully detached dark-themed configuration window — OBS captures only the monitor while you control everything from a separate window.
 
 ## ⌨️ Controls & Shortcuts
 
 | Key | Action |
 |-----|--------|
-| **TAB** | Open/Close Configuration Menu |
+| **TAB** | Open Configuration Panel (separate window) |
 | **SPACE** | Start/Pause Selected Routine |
-| **B** | Reset Simulation to Healthy Baseline (Clear Routine) |
+| **B** | Reset Simulation to Healthy Baseline |
+| **A** | Acknowledge / Silence Active Alarm |
 | **S** | Mute/Unmute Alarm Audio |
 | **U** | Toggle UI Overlay (Vitals only) |
+| **G** | Toggle ECG Grid |
 | **F11** | Toggle Fullscreen |
-| **1 - 5** | Jump to Config Menu Tabs |
 | **ESC** | Exit Application |
+
+## 🎥 OBS / Streaming Setup
+
+VitalSign Pro is designed for clean recording and streaming:
+
+1. Press **TAB** to open the configuration panel — it launches as a **separate OS window**.
+2. In OBS, use **Window Capture** and select only the **VitalSign Simulator** window.
+3. The config panel can be moved to a second monitor or kept off-screen — changes apply instantly to the main monitor.
+4. Status bar shows reduced hints (Ack, Fullscreen, Exit) while the config panel is open.
 
 ## 🚀 Installation & Build
 
@@ -50,14 +64,10 @@
 - Numpy
 
 ### Quick Start
-1. Place your pulse and alarm sounds in the root directory:
-   - `pulse_tone.wav`
-   - `alarm_med.wav`
-   - `alarm_high.wav`
-2. Run the application:
-   ```bash
-   python main.py
-   ```
+```bash
+pip install pygame numpy
+python main.py
+```
 
 ### Building the Executable
 To package the application for Windows:
@@ -71,3 +81,6 @@ pyinstaller --noconsole --onefile --name VitalSignPro main.py
 
 ## 📄 License
 Distributed under the MIT License. See `LICENSE` for more information.
+
+
+1- GE, Phillips, or any other mentioned brands are not affiliated with this program. If you'd like file a takedown please open an issue on github.
