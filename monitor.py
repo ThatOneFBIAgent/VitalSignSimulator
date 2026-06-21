@@ -88,7 +88,7 @@ class MonitorDSP:
         else:
             self.ecg_amplitude = 0.0
 
-# ─── Layout Constants ───
+# Layout Constants
 WIDTH, HEIGHT = 1920, 1080
 FPS = 60
 INFO_BAR_H = 48
@@ -96,14 +96,14 @@ PANEL_W = 420
 WAVE_W = WIDTH - PANEL_W   # 1500
 WAVE_AREA_H = HEIGHT - INFO_BAR_H  # 1032
 
-# ─── Colors (Defaults for standard theme) ───
+# Colors (Defaults for standard theme)
 from constants import THEMES
 
 C_INFO_BG   = (16, 16, 24)
 C_INFO_TXT  = (120, 120, 150)
 C_DIM       = (60, 60, 80)
 
-# ─── Waveform channel definitions ───
+# Waveform channel definitions
 CHANNELS = [
     {"name": "II",    "key": "ecg",   "scale": 180, "offset": 0.0, "line_w": 3, "range": (-1.4, 1.6)},
     {"name": "Pleth", "key": "pleth", "scale": 150, "offset": 0.0, "line_w": 3, "range": (-0.1, 1.2)},
@@ -234,6 +234,7 @@ class Monitor:
         WS_CAPTION = 0x00C00000
         ctypes.windll.user32.SetWindowLongW(hwnd, -16, style & ~WS_CAPTION)
         ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x27) # SWP_FRAMECHANGED
+        self._apply_borderless_style()
         
         pygame.display.set_caption("VitalSign Simulator")
         self.clock = pygame.time.Clock()
@@ -269,7 +270,7 @@ class Monitor:
             monitor_ref=self
         )
         
-        # New Standalone Config Window (OBS-Friendly)
+        # Standalone config window
         self.config_win = ConfigWindow(
             self.sim, self.alarm_logic, self.fx, self.audio,
             self.routine_manager, monitor=self
@@ -1088,6 +1089,11 @@ class Monitor:
         # SWP_NOSIZE = 1, SWP_NOZORDER = 4
         ctypes.windll.user32.SetWindowPos(hwnd, 0, x, y, 0, 0, 0x0001 | 0x0004)
 
+    def _set_window_rect(self, x, y, w, h):
+        self.screen = pygame.display.set_mode((int(w), int(h)), pygame.RESIZABLE)
+        self._apply_borderless_style()
+        self._set_window_pos(int(x), int(y))
+
     def _get_work_area(self):
         import ctypes
         from ctypes import wintypes
@@ -1130,19 +1136,55 @@ class Monitor:
         ctypes.windll.user32.ReleaseCapture()
         ctypes.windll.user32.SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0)
 
+    def _cursor_pos(self):
+        import ctypes
+        from ctypes import wintypes
+
+        point = wintypes.POINT()
+        ctypes.windll.user32.GetCursorPos(ctypes.byref(point))
+        return point.x, point.y
+
+    def _begin_window_drag(self, local_pos):
+        if self.fullscreen:
+            return
+        if self.maximized:
+            self._restore_shrunken_window()
+            win_w, _ = self.screen.get_size()
+            self._drag_offset = (min(max(24, win_w // 2), win_w - 24), local_pos[1])
+        else:
+            self._drag_offset = local_pos
+        self._dragging = True
+
+    def _drag_window_to_cursor(self):
+        if not self._dragging or self.fullscreen:
+            return
+        try:
+            mx, my = self._cursor_pos()
+            ox, oy = self._drag_offset
+            self._set_window_pos(mx - ox, my - oy)
+        except Exception:
+            pass
+
     def _minimize_window(self):
         import ctypes
         hwnd = pygame.display.get_wm_info()["window"]
         ctypes.windll.user32.ShowWindow(hwnd, 6) # SW_MINIMIZE = 6
 
     def _toggle_maximize(self):
-        import ctypes
-        hwnd = pygame.display.get_wm_info()["window"]
         if getattr(self, "maximized", False):
-            ctypes.windll.user32.ShowWindow(hwnd, 9) # SW_RESTORE = 9
-            self.maximized = False
+            self._restore_shrunken_window()
         else:
-            ctypes.windll.user32.ShowWindow(hwnd, 3) # SW_MAXIMIZE = 3
+            if self.fullscreen:
+                self._restore_shrunken_window()
+                return
+            x, y, w, h = self._get_work_area()
+            self._windowed_size = self.screen.get_size()
+            try:
+                self._windowed_pos = self._get_window_pos()
+            except Exception:
+                self._windowed_pos = None
+            self._set_window_rect(x, y, w, h)
+            self.fullscreen = False
             self.maximized = True
 
     def _apply_borderless_style(self):
@@ -1150,17 +1192,37 @@ class Monitor:
         hwnd = pygame.display.get_wm_info()["window"]
         style = ctypes.windll.user32.GetWindowLongW(hwnd, -16)
         WS_CAPTION = 0x00C00000
-        ctypes.windll.user32.SetWindowLongW(hwnd, -16, style & ~WS_CAPTION)
+        WS_THICKFRAME = 0x00040000
+        WS_SYSMENU = 0x00080000
+        WS_MINIMIZEBOX = 0x00020000
+        WS_MAXIMIZEBOX = 0x00010000
+        style = (style | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX) & ~WS_CAPTION
+        ctypes.windll.user32.SetWindowLongW(hwnd, -16, style)
         ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x27)
+
+    def _shrunken_work_rect(self):
+        try:
+            x, y, work_w, work_h = self._get_work_area()
+        except Exception:
+            x, y, work_w, work_h = 80, 60, 1280, 720
+
+        w = max(900, int(work_w * 0.90))
+        h = max(560, int(work_h * 0.90))
+        w = min(w, work_w - 24) if work_w > 960 else work_w
+        h = min(h, work_h - 24) if work_h > 620 else work_h
+        return x + (work_w - w) // 2, y + (work_h - h) // 2, w, h
+
+    def _restore_shrunken_window(self):
+        x, y, w, h = self._shrunken_work_rect()
+        self._set_window_rect(x, y, w, h)
+        self.fullscreen = False
+        self.maximized = False
+        self._windowed_size = (w, h)
+        self._windowed_pos = (x, y)
 
     def _toggle_fullscreen(self):
         if self.fullscreen:
-            size = self._windowed_size or (1280, 720)
-            self.screen = pygame.display.set_mode(size, pygame.RESIZABLE)
-            self._apply_borderless_style()
-            if self._windowed_pos:
-                self._set_window_pos(*self._windowed_pos)
-            self.fullscreen = False
+            self._restore_shrunken_window()
             return
 
         self._windowed_size = self.screen.get_size()
@@ -1169,9 +1231,7 @@ class Monitor:
         except Exception:
             self._windowed_pos = None
 
-        x, y, w, h = self._get_work_area()
-        self.screen = pygame.display.set_mode((w, h), pygame.NOFRAME)
-        self._set_window_pos(x, y)
+        self.screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
         self.fullscreen = True
         self.maximized = False
 
@@ -1196,12 +1256,7 @@ class Monitor:
                         # Re-apply mode and remove WS_CAPTION to maintain custom resizable state
                         self.screen = pygame.display.set_mode((event.w, event.h), pygame.RESIZABLE)
                         self._windowed_size = (event.w, event.h)
-                        import ctypes
-                        hwnd = pygame.display.get_wm_info()["window"]
-                        style = ctypes.windll.user32.GetWindowLongW(hwnd, -16)
-                        WS_CAPTION = 0x00C00000
-                        ctypes.windll.user32.SetWindowLongW(hwnd, -16, style & ~WS_CAPTION)
-                        ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x27)
+                        self._apply_borderless_style()
                 
                 if self.showing_disclaimer:
                     if event.type == pygame.MOUSEBUTTONDOWN and self.disclaimer_timer <= 0:
@@ -1215,6 +1270,8 @@ class Monitor:
                     continue
 
                 if event.type == pygame.MOUSEBUTTONDOWN:
+                    if event.button != 1:
+                        continue
                     mx, my = event.pos
                     sw, sh = self.screen.get_size()
                             
@@ -1229,8 +1286,15 @@ class Monitor:
                             self._toggle_maximize()
                     elif self.min_btn_rect.collidepoint(cx, cy):
                         self._minimize_window()
-                    elif cy < INFO_BAR_H and not self.fullscreen and not self.maximized:
-                        self._trigger_native_drag()
+                    elif cy < INFO_BAR_H and not self.fullscreen:
+                        self._begin_window_drag((mx, my))
+
+                if event.type == pygame.MOUSEBUTTONUP:
+                    if event.button == 1:
+                        self._dragging = False
+
+                if event.type == pygame.MOUSEMOTION:
+                    self._drag_window_to_cursor()
 
                 if event.type == pygame.KEYDOWN:
                     # Config menu intercepts keys when open
@@ -1277,8 +1341,6 @@ class Monitor:
 
         self.config_win.close()
         self.diagnostics_win.close()
-        if self.config_win.thread and self.config_win.thread.is_alive():
-            self.config_win.thread.join(timeout=1.0)
-        if self.diagnostics_win.thread and self.diagnostics_win.thread.is_alive():
-            self.diagnostics_win.thread.join(timeout=1.0)
+        self.config_win.wait_closed(timeout=3.0)
+        self.diagnostics_win.wait_closed(timeout=3.0)
         pygame.quit()

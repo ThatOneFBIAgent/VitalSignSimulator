@@ -30,6 +30,39 @@ FONT      = "Consolas"
 WIN_W     = 700
 WIN_H     = 680
 
+HELP_TEXT = {
+    "ECG Rhythm": "Selects the cardiac rhythm waveform and rate behavior.",
+    "Displayed Lead": "Chooses the main monitor ECG lead; Clean combines all leads.",
+    "Resp Pattern": "Changes the breathing pattern used for respiration and CO2.",
+    "EtCO2 Connected": "Shows or disconnects the capnography probe.",
+    "Temp Connected": "Shows or disconnects the temperature probe.",
+    "ECG Lead Artifacts": "Adds ECG drift, mains noise, motion, and lead pops.",
+    "Artifact Level": "Sets how strong ECG sensor artifacts appear.",
+    "EtCO2 Variability": "Adds breath-to-breath capnography variation.",
+    "Heart Rate": "Target heart rate; rhythm modes may clamp it to plausible ranges.",
+    "SpO2": "Target oxygen saturation.",
+    "Resp Rate": "Target respiratory rate.",
+    "BP Systolic": "Target systolic arterial pressure.",
+    "BP Diastolic": "Target diastolic arterial pressure.",
+    "Temperature": "Target patient temperature.",
+    "EtCO2": "Target end-tidal CO2.",
+    "Min": "Lower bound for natural drift around the target.",
+    "Max": "Upper bound for natural drift around the target.",
+    "Alarm": "Sets the threshold that triggers this alarm.",
+    "Display Theme": "Changes the monitor color palette.",
+    "Institution": "Changes the top-bar institution label.",
+    "Department": "Changes the top-bar department label.",
+    "Bed / Unit": "Changes the top-bar bed or unit label.",
+    "Alarm Box Style": "Changes how numeric alarm boxes are drawn.",
+    "Differentiate High/Low": "Uses different visual behavior for high and low alarms.",
+    "Diagnostics Window": "Opens the separate signal and alarm diagnostics view.",
+    "Show 'REC' Status": "Shows routine playback status in the top bar.",
+    "Dim Watermark": "Dims the simulation-only watermark while keeping it visible.",
+    "CRT": "Toggles the selected display effect.",
+    "Mute Audio": "Mutes pulse and alarm sounds.",
+    "Active Routine": "Selects the scripted scenario to preview and run.",
+}
+
 
 class ConfigWindow:
     """Standalone configuration window running in a separate OS-level window."""
@@ -49,99 +82,109 @@ class ConfigWindow:
         self.is_ready = False
         self._restore_requested = threading.Event()
         self._close_requested = threading.Event()
+        self._closed = threading.Event()
 
         self._tab_buttons = {}
         self._tab_frames = {}
         self._active_tab = None
         self._refresh_jobs = []  # List of (widget, getter_func, update_func)
+        self._help_label = None
 
     def show(self):
         if self.is_running or self.is_starting:
             self._restore_requested.set()
             return
         self._close_requested.clear()
+        self._closed.clear()
         self.is_starting = True
-        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread = threading.Thread(target=self._run, daemon=False)
         self.thread.start()
 
     def close(self):
         if self.is_running or self.is_starting:
             self._close_requested.set()
 
+    def wait_closed(self, timeout=3.0):
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=timeout)
+        return not (self.thread and self.thread.is_alive())
+
     # ─── Window Lifecycle ───
 
     def _run(self):
-        self.is_starting = False
-        self.is_running = True
-        self.is_ready = False
-        self._restore_requested.clear()
-        self._close_requested.clear()
-        self._refresh_jobs = []
-        self._tab_buttons = {}
-        self._tab_frames = {}
-        self._active_tab = None
-        self.root = tk.Tk()
-        self.root.withdraw()
-        self.root.title("VitalSign Pro Configuration")
-        self.root.minsize(600, 520)
-        self.root.resizable(True, True)
-        self.root.configure(bg=BG)
+        try:
+            self.is_starting = False
+            self.is_running = True
+            self.is_ready = False
+            self._restore_requested.clear()
+            self._refresh_jobs = []
+            self._tab_buttons = {}
+            self._tab_frames = {}
+            self._active_tab = None
+            self._help_label = None
+            self.root = tk.Tk()
+            self.root.withdraw()
+            self.root.title("VitalSign Pro Configuration")
+            self.root.minsize(600, 520)
+            self.root.resizable(True, True)
+            self.root.configure(bg=BG)
 
-        # Position to the right of screen
-        self.root.update_idletasks()
-        sx = self.root.winfo_screenwidth()
-        sy = self.root.winfo_screenheight()
-        x = sx - WIN_W - 50
-        y = (sy - WIN_H) // 2
-        self.root.geometry(f"{WIN_W}x{WIN_H}+{x}+{y}")
+            # Position to the right of screen
+            self.root.update_idletasks()
+            sx = self.root.winfo_screenwidth()
+            sy = self.root.winfo_screenheight()
+            x = sx - WIN_W - 50
+            y = (sy - WIN_H) // 2
+            self.root.geometry(f"{WIN_W}x{WIN_H}+{x}+{y}")
 
         # ─── TTK Theming ───
-        style = ttk.Style(self.root)
-        style.theme_use("clam")
-        style.configure("TCombobox", fieldbackground=SURFACE2, background=SURFACE2,
-                         foreground=CYAN, arrowcolor=CYAN, borderwidth=1,
-                         relief="flat")
-        style.map("TCombobox",
-                  fieldbackground=[("readonly", SURFACE2)],
-                  foreground=[("readonly", CYAN)],
-                  selectbackground=[("readonly", SURFACE2)],
-                  selectforeground=[("readonly", CYAN)])
-        style.configure("Vertical.TScrollbar", background=SURFACE, troughcolor=BG,
-                         borderwidth=0, arrowcolor=TEXT2)
-        # Combobox dropdown listbox styling
-        self.root.option_add("*TCombobox*Listbox.background", SURFACE2)
-        self.root.option_add("*TCombobox*Listbox.foreground", TEXT)
-        self.root.option_add("*TCombobox*Listbox.selectBackground", HOVER)
-        self.root.option_add("*TCombobox*Listbox.selectForeground", ACCENT)
-        self.root.option_add("*TCombobox*Listbox.font", (FONT, 10))
+            style = ttk.Style(self.root)
+            style.theme_use("clam")
+            style.configure("TCombobox", fieldbackground=SURFACE2, background=SURFACE2,
+                            foreground=CYAN, arrowcolor=CYAN, borderwidth=1,
+                            relief="flat")
+            style.map("TCombobox",
+                      fieldbackground=[("readonly", SURFACE2)],
+                      foreground=[("readonly", CYAN)],
+                      selectbackground=[("readonly", SURFACE2)],
+                      selectforeground=[("readonly", CYAN)])
+            style.configure("Vertical.TScrollbar", background=SURFACE, troughcolor=BG,
+                            borderwidth=0, arrowcolor=TEXT2)
+            self.root.option_add("*TCombobox*Listbox.background", SURFACE2)
+            self.root.option_add("*TCombobox*Listbox.foreground", TEXT)
+            self.root.option_add("*TCombobox*Listbox.selectBackground", HOVER)
+            self.root.option_add("*TCombobox*Listbox.selectForeground", ACCENT)
+            self.root.option_add("*TCombobox*Listbox.font", (FONT, 10))
 
-        # Outer border frame
-        border = tk.Frame(self.root, bg=BORDER)
-        border.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
-        inner = tk.Frame(border, bg=BG)
-        inner.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
+            border = tk.Frame(self.root, bg=BORDER)
+            border.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
+            inner = tk.Frame(border, bg=BG)
+            inner.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
 
-        self._build_title_bar(inner)
-        self._build_tab_bar(inner)
-        self._build_content_area(inner)
-        self._build_footer(inner)
+            self._build_title_bar(inner)
+            self._build_tab_bar(inner)
+            self._build_content_area(inner)
+            self._build_footer(inner)
 
-        self._switch_tab("Vitals")
-        self.root.deiconify()
-        self._restore_window()
-        self.is_ready = True
-        self._periodic_refresh()
+            self._switch_tab("Vitals")
+            self.root.deiconify()
+            self._restore_window()
+            self.is_ready = True
+            self._periodic_refresh()
 
-        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
-        self.root.mainloop()
-        self._refresh_jobs = []
-        self._tab_buttons = {}
-        self._tab_frames = {}
-        self._active_tab = None
-        self.is_ready = False
-        self.is_running = False
-        self.is_starting = False
-        self.root = None
+            self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+            self.root.mainloop()
+        finally:
+            self._refresh_jobs = []
+            self._tab_buttons = {}
+            self._tab_frames = {}
+            self._active_tab = None
+            self._help_label = None
+            self.is_ready = False
+            self.is_running = False
+            self.is_starting = False
+            self.root = None
+            self._closed.set()
 
     def _restore_window(self):
         if not self.root:
@@ -167,16 +210,16 @@ class ConfigWindow:
     # ─── Title Bar ───
 
     def _build_title_bar(self, parent):
-        bar = tk.Frame(parent, bg=SURFACE, height=58)
+        bar = tk.Frame(parent, bg=SURFACE, height=34)
         bar.pack(fill=tk.X)
         bar.pack_propagate(False)
 
-        title = tk.Label(bar, text="  ◆  CONFIGURATION", font=(FONT, 13, "bold"),
+        title = tk.Label(bar, text="  CONFIGURATION", font=(FONT, 10, "bold"),
                          bg=SURFACE, fg=CYAN, anchor="w")
         title.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=8)
 
-        tk.Label(bar, text="DETACHED", font=(FONT, 9, "bold"),
-                 bg=SURFACE2, fg=ACCENT, padx=10, pady=4).pack(side=tk.RIGHT, padx=18)
+        tk.Label(bar, text="DETACHED", font=(FONT, 8, "bold"),
+                 bg=SURFACE2, fg=ACCENT, padx=8, pady=2).pack(side=tk.RIGHT, padx=14)
 
         # Native OS chrome now handles minimize/close reliably.
         tk.Frame(parent, bg=BORDER, height=1).pack(fill=tk.X)
@@ -260,12 +303,19 @@ class ConfigWindow:
 
     def _build_footer(self, parent):
         tk.Frame(parent, bg=BORDER, height=1).pack(fill=tk.X, padx=16)
-        foot = tk.Frame(parent, bg=BG, height=30)
-        foot.pack(fill=tk.X, padx=18, pady=8)
-        tk.Label(foot, text="SIMULATION ONLY — NOT A MEDICAL DEVICE",
-                 font=(FONT, 9), bg=BG, fg="#5a2020").pack(side=tk.LEFT)
-        tk.Label(foot, text="VitalSign Pro",
-                 font=(FONT, 9), bg=BG, fg=DIM).pack(side=tk.RIGHT)
+        foot = tk.Frame(parent, bg=BG)
+        foot.pack(fill=tk.X, padx=18, pady=(5, 6))
+
+        self._help_label = tk.Label(foot, text="", font=(FONT, 8),
+                                    bg=BG, fg=TEXT2, anchor="w")
+        self._help_label.pack(fill=tk.X, pady=(0, 2))
+
+        legal_row = tk.Frame(foot, bg=BG)
+        legal_row.pack(fill=tk.X)
+        tk.Label(legal_row, text="SIMULATION ONLY — NOT A MEDICAL DEVICE",
+                 font=(FONT, 8), bg=BG, fg="#5a2020").pack(side=tk.LEFT)
+        tk.Label(legal_row, text="VitalSign Pro",
+                 font=(FONT, 8), bg=BG, fg=DIM).pack(side=tk.RIGHT)
 
     # ─── Scrollable helper ───
 
@@ -330,10 +380,38 @@ class ConfigWindow:
         row.pack(fill=tk.X, pady=4)
         return row
 
-    def _add_slider(self, parent, label, live_getter, lo, hi, step, on_change, fmt=".0f"):
+    def _help_for(self, label, fallback=""):
+        for key, text in HELP_TEXT.items():
+            if key in label:
+                return text
+        return fallback or "Adjusts this simulator setting."
+
+    def _bind_help(self, widget, text):
+        if not text:
+            return
+
+        def enter(_):
+            if self._help_label:
+                self._help_label.config(text=text)
+
+        def leave(_):
+            if self._help_label:
+                self._help_label.config(text="")
+
+        widgets = [widget]
+        try:
+            widgets.extend(widget.winfo_children())
+        except Exception:
+            pass
+        for child in widgets:
+            child.bind("<Enter>", enter, add="+")
+            child.bind("<Leave>", leave, add="+")
+
+    def _add_slider(self, parent, label, live_getter, lo, hi, step, on_change, fmt=".0f", help_text=None):
         row = self._make_row(parent)
         tk.Label(row, text=label, font=(FONT, 11), bg=BG, fg=TEXT, anchor="w",
                  width=22).pack(side=tk.LEFT)
+        self._bind_help(row, help_text or self._help_for(label))
 
         initial = live_getter()
         val_lbl = tk.Label(row, text=f"◀ {initial:{fmt}} ▶", font=(FONT, 11, "bold"),
@@ -359,13 +437,15 @@ class ConfigWindow:
                 sl.set(v)
                 lb.config(text=f"◀ {v:{f}} ▶")
         self._refresh_jobs.append((None, live_getter, _refresh_slider))
+        self._bind_help(row, help_text or self._help_for(label))
         
         return s, val_lbl
 
-    def _add_toggle(self, parent, label, live_getter, on_change):
+    def _add_toggle(self, parent, label, live_getter, on_change, help_text=None):
         row = self._make_row(parent)
         tk.Label(row, text=label, font=(FONT, 11), bg=BG, fg=TEXT, anchor="w",
                  width=26).pack(side=tk.LEFT)
+        self._bind_help(row, help_text or self._help_for(label))
 
         initial = live_getter()
         state = {"on": initial}
@@ -392,13 +472,15 @@ class ConfigWindow:
                 state["on"] = v
                 update_visual()
         self._refresh_jobs.append((None, live_getter, _refresh_toggle))
+        self._bind_help(row, help_text or self._help_for(label))
 
         return indicator
 
-    def _add_dropdown(self, parent, label, options, live_getter, on_change):
+    def _add_dropdown(self, parent, label, options, live_getter, on_change, help_text=None):
         row = self._make_row(parent)
         tk.Label(row, text=label, font=(FONT, 11), bg=BG, fg=TEXT, anchor="w",
                  width=18).pack(side=tk.LEFT)
+        self._bind_help(row, help_text or self._help_for(label))
 
         initial = live_getter()
         combo = ttk.Combobox(row, values=options, state="readonly",
@@ -411,6 +493,7 @@ class ConfigWindow:
             if c.get() != v:
                 c.set(v)
         self._refresh_jobs.append((None, live_getter, _refresh_dropdown))
+        self._bind_help(row, help_text or self._help_for(label))
 
         return combo
 
@@ -637,6 +720,144 @@ class ConfigWindow:
         play_btn.bind("<Button-1>", toggle)
 
     # ─── Periodic Refresh ───
+
+    def _build_routines(self, parent):
+        rm = self.routine_manager
+        if not rm:
+            tk.Label(parent, text="Routine Manager not available.",
+                     font=(FONT, 11), bg=BG, fg=TEXT2).pack(pady=20)
+            return
+
+        routines = rm.get_routine_names()
+        if not routines:
+            tk.Label(parent, text="No routines found.",
+                     font=(FONT, 11), bg=BG, fg=TEXT2).pack(pady=20)
+            return
+
+        if not rm.active_routine_name:
+            rm.set_routine(routines[0])
+
+        header = tk.Frame(parent, bg=BG)
+        header.pack(fill=tk.X, padx=18, pady=(14, 6))
+        self._section_header(header, "Routine Selection")
+
+        row = tk.Frame(header, bg=BG)
+        row.pack(fill=tk.X, pady=4)
+        tk.Label(row, text="Active Routine", font=(FONT, 11), bg=BG, fg=TEXT,
+                 anchor="w", width=18).pack(side=tk.LEFT)
+        combo = ttk.Combobox(row, values=routines, state="readonly",
+                             width=34, font=(FONT, 10))
+        combo.set(rm.active_routine_name)
+        combo.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(8, 4))
+        self._bind_help(row, self._help_for("Active Routine"))
+
+        preview_wrap = tk.Frame(parent, bg=BG)
+        preview_wrap.pack(fill=tk.BOTH, expand=True, padx=18, pady=(4, 8))
+        self._section_header(preview_wrap, "Timeline Preview")
+
+        canvas = tk.Canvas(preview_wrap, bg=BG, highlightthickness=0, bd=0)
+        preview_inner = tk.Frame(canvas, bg=BG)
+        preview_inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        window_id = canvas.create_window((0, 0), window=preview_inner, anchor="nw")
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window_id, width=e.width))
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        scrollbar = ttk.Scrollbar(preview_wrap, orient="vertical", command=canvas.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        footer = tk.Frame(parent, bg=BG)
+        footer.pack(fill=tk.X, padx=18, pady=(0, 12))
+        play_btn = tk.Label(footer, text="START ROUTINE", font=(FONT, 13, "bold"),
+                            bg="#0a2a18", fg=ACCENT, cursor="hand2",
+                            padx=20, pady=14, anchor="center")
+        play_btn.pack(fill=tk.X, pady=8)
+        self._bind_help(play_btn, "Starts or stops the selected routine.")
+
+        labels = {
+            "ecg_rhythm": "ECG rhythm",
+            "resp_pattern": "Resp pattern",
+            "probe_etco2": "EtCO2 probe",
+            "probe_temp": "Temp probe",
+            "hr": "HR",
+            "spo2": "SpO2",
+            "rr": "RR",
+            "bp_sys": "BP sys",
+            "bp_dia": "BP dia",
+            "temp": "Temp",
+            "etco2": "EtCO2",
+        }
+
+        def format_time(seconds):
+            seconds = int(seconds)
+            return f"{seconds // 60:02d}:{seconds % 60:02d}"
+
+        def state_text(state):
+            parts = []
+            for key, value in state.items():
+                parts.append(f"{labels.get(key, key)} -> {value}")
+            return "; ".join(parts) if parts else "No state change"
+
+        def redraw_preview():
+            for child in preview_inner.winfo_children():
+                child.destroy()
+
+            routine = rm.active_routine or []
+            if not routine:
+                tk.Label(preview_inner, text="No steps in this routine.",
+                         font=(FONT, 10), bg=BG, fg=TEXT2).pack(anchor="w", pady=8)
+                return
+
+            for idx, step in enumerate(routine):
+                active = rm.is_playing and idx == rm.current_step
+                done = rm.is_playing and idx < rm.current_step
+                color = ACCENT if active else TEXT2 if done else TEXT
+                bg = SELECTED if active else BG
+                row_frame = tk.Frame(preview_inner, bg=bg)
+                row_frame.pack(fill=tk.X, pady=2)
+                tk.Label(row_frame, text=format_time(step.get("t", 0)),
+                         font=(FONT, 10, "bold"), bg=bg, fg=color,
+                         width=7, anchor="w").pack(side=tk.LEFT, padx=(2, 8), pady=5)
+                tk.Label(row_frame, text=state_text(step.get("state", {})),
+                         font=(FONT, 10), bg=bg, fg=color, anchor="w",
+                         justify=tk.LEFT, wraplength=520).pack(side=tk.LEFT, fill=tk.X, expand=True, pady=5)
+
+        def update_play_button():
+            if rm.is_playing:
+                play_btn.config(text="STOP ROUTINE", bg="#2a0a0a", fg=RED)
+            else:
+                play_btn.config(text="START ROUTINE", bg="#0a2a18", fg=ACCENT)
+
+        def select_routine(_=None):
+            rm.set_routine(combo.get())
+            update_play_button()
+            redraw_preview()
+
+        def toggle(_=None):
+            rm.toggle_play()
+            update_play_button()
+            redraw_preview()
+
+        combo.bind("<<ComboboxSelected>>", select_routine)
+        play_btn.bind("<Button-1>", toggle)
+        update_play_button()
+        redraw_preview()
+
+        last_seen = {"value": None}
+
+        def refresh_key():
+            return (rm.active_routine_name, rm.current_step, rm.is_playing, int(rm.elapsed))
+
+        def refresh_routines(value):
+            if value == last_seen["value"]:
+                return
+            last_seen["value"] = value
+            if combo.get() != (rm.active_routine_name or ""):
+                combo.set(rm.active_routine_name or routines[0])
+            update_play_button()
+            redraw_preview()
+
+        self._refresh_jobs.append((None, refresh_key, refresh_routines))
 
     def _periodic_refresh(self):
         if not self.root or not self.is_running:

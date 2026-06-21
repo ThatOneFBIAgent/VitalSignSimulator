@@ -39,38 +39,48 @@ class DiagnosticsWindow:
         self.is_starting = False
         self._restore_requested = threading.Event()
         self._close_requested = threading.Event()
+        self._closed = threading.Event()
 
     def show(self):
         if self.is_running or self.is_starting:
             self._restore_requested.set()
             return
         self._close_requested.clear()
+        self._closed.clear()
         self.is_starting = True
-        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread = threading.Thread(target=self._run, daemon=False)
         self.thread.start()
 
     def close(self):
         if self.is_running or self.is_starting:
             self._close_requested.set()
 
+    def wait_closed(self, timeout=3.0):
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=timeout)
+        return not (self.thread and self.thread.is_alive())
+
     def _run(self):
-        self.is_starting = False
-        self.is_running = True
-        self._restore_requested.clear()
-        self.root = tk.Tk()
-        self.root.title("VitalSign Diagnostics")
-        self.root.minsize(980, 720)
-        self.root.geometry("1180x820")
-        self.root.configure(bg=BG)
-        self.canvas = tk.Canvas(self.root, bg=BG, highlightthickness=0)
-        self.canvas.pack(fill=tk.BOTH, expand=True)
-        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
-        self._tick()
-        self.root.mainloop()
-        self.root = None
-        self.canvas = None
-        self.is_running = False
-        self.is_starting = False
+        try:
+            self.is_starting = False
+            self.is_running = True
+            self._restore_requested.clear()
+            self.root = tk.Tk()
+            self.root.title("VitalSign Diagnostics")
+            self.root.minsize(980, 720)
+            self.root.geometry("1180x820")
+            self.root.configure(bg=BG)
+            self.canvas = tk.Canvas(self.root, bg=BG, highlightthickness=0)
+            self.canvas.pack(fill=tk.BOTH, expand=True)
+            self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+            self._tick()
+            self.root.mainloop()
+        finally:
+            self.canvas = None
+            self.root = None
+            self.is_running = False
+            self.is_starting = False
+            self._closed.set()
 
     def _on_close(self):
         self.monitor.show_diagnostics_window = False
