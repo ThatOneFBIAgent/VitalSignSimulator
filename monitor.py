@@ -42,8 +42,13 @@ class MonitorDSP:
         self._time_since_last_r = 0.0
         self.ecg_amplitude = 0.0
         self.hr_irregular = False
+        self.ecg_rhythm = "[Norm] Sinus Rhythm"
+        self.ecg_ailments = {}
 
     def update(self, sim, dt, ecg_buffer):
+        self.ecg_rhythm = getattr(sim, "ecg_rhythm", "[Norm] Sinus Rhythm")
+        self.ecg_ailments = dict(getattr(sim, "ecg_ailments", {}))
+
         # Calculate HR from R-waves
         self._time_since_last_r += dt
         
@@ -330,8 +335,10 @@ class Monitor:
 
         # Disclaimer state
         self.showing_disclaimer = True
+        self.patient_hooked_up = False
         self.disclaimer_timer = 7.0
         self.disclaimer_btn_rect = pygame.Rect(WIDTH // 2 - 150, HEIGHT // 2 + 220, 300, 60)
+        self.hook_patient_btn_rect = pygame.Rect(WAVE_W // 2 - 210, INFO_BAR_H + WAVE_AREA_H // 2 + 70, 420, 72)
         self.window_focused = True
         self.config_loading_until = 0.0
         self.config_cooldown_until = 0.0
@@ -653,13 +660,14 @@ class Monitor:
 
         al = self.alarm_logic.alarming_params
         d = self.dsp
+        connected = self.patient_hooked_up
 
         # ── HR ──
         y = INFO_BAR_H + 15
-        hr_str = f"{int(d.hr)}" if d.hr > 5 else "---"
+        hr_str = f"{int(d.hr)}" if connected and d.hr > 5 else "---"
         self._draw_param_block(px, y, "HR", hr_str, "bpm", self.theme["ecg"], large=True, alarm_status=al.get("hr"))
         # Heart blink indicator (moved down to avoid alarm bar)
-        if self.heart_on:
+        if connected and self.heart_on:
             hx, hy = px + PANEL_W - 52, y + 62
             pygame.draw.circle(self.canvas, (255, 30, 30), (hx, hy), 12)
             pygame.draw.circle(self.canvas, (255, 30, 30), (hx + 15, hy), 12)
@@ -669,23 +677,23 @@ class Monitor:
         # ── SpO2 ──
         y += 195
         pygame.draw.line(self.canvas, self.theme["divider"], (px + 15, y - 12), (px + PANEL_W - 15, y - 12))
-        spo2_str = f"{int(d.spo2)}" if d.spo2 > 10 else "---"
+        spo2_str = f"{int(d.spo2)}" if connected and d.spo2 > 10 else "---"
         self._draw_param_block(px, y, "SpO2", spo2_str, "%", self.theme["pleth"], large=True, alarm_status=al.get("spo2"))
 
         # ── RR ──
         y += 195
         pygame.draw.line(self.canvas, self.theme["divider"], (px + 15, y - 12), (px + PANEL_W - 15, y - 12))
-        rr_str = f"{int(d.rr)}" if d.rr > 2 else "---"
+        rr_str = f"{int(d.rr)}" if connected and d.rr > 2 else "---"
         self._draw_param_block(px, y, "RR", rr_str, "rpm", self.theme["resp"], large=False, alarm_status=al.get("rr"))
 
         # ── ABP ──
         y += 150
         pygame.draw.line(self.canvas, self.theme["divider"], (px + 15, y - 12), (px + PANEL_W - 15, y - 12))
-        bp_str = f"{int(d.bp_sys)}/{int(d.bp_dia)}" if d.bp_sys > 20 else "---/---"
+        bp_str = f"{int(d.bp_sys)}/{int(d.bp_dia)}" if connected and d.bp_sys > 20 else "---/---"
         self._draw_param_block(px, y, "ABP", bp_str, "mmHg", self.theme["abp"], large=False, alarm_status=al.get("abp"))
         # MAP
         if not (al.get("abp") == "low" and not self.alarm_logic.flash_state):
-            map_str = f"({int(d.bp_map)})" if d.bp_map > 10 else "(---)"
+            map_str = f"({int(d.bp_map)})" if connected and d.bp_map > 10 else "(---)"
             map_surf = self.font_sm.render(map_str, True, self.theme["abp"])
             self.canvas.blit(map_surf, (px + 270, y + 75))
 
@@ -693,14 +701,14 @@ class Monitor:
         y += 150
         pygame.draw.line(self.canvas, self.theme["divider"], (px + 15, y - 12), (px + PANEL_W - 15, y - 12))
         etco2_str = "---"
-        if self.sim.probe_etco2:
+        if connected and self.sim.probe_etco2:
             etco2_str = f"{int(d.etco2)}" if d.etco2 > 5 else "---"
         self._draw_param_block(px, y, "EtCO2", etco2_str, "mmHg", self.theme["co2"], large=False, alarm_status=al.get("etco2"))
 
         # ── Temp ──
         y += 135
         pygame.draw.line(self.canvas, self.theme["divider"], (px + 15, y - 12), (px + PANEL_W - 15, y - 12))
-        temp_str = f"{d.temp:.1f}" if self.sim.probe_temp else "---"
+        temp_str = f"{d.temp:.1f}" if connected and self.sim.probe_temp else "---"
         self._draw_param_block(px, y, "Temp", temp_str, "°C", self.theme["temp"], large=False)
 
     def _draw_param_block(self, px, y, label, value_str, unit, color, large=False, alarm_status=None):
@@ -810,7 +818,9 @@ class Monitor:
         """Bottom-left status hints."""
         if self.showing_disclaimer:
             return
-        if self.config_win.is_running:
+        if not self.patient_hooked_up:
+            hints = "TAB: Preconfigure  |  Click HOOK UP PATIENT to begin lead testing  |  F11: Fullscreen  |  ESC: Exit"
+        elif self.config_win.is_running:
             hints = "A: Ack  |  F11: Fullscreen  |  ESC: Exit"
         else:
             hints = "TAB: Config  |  A: Ack  |  S: Mute  |  U: Toggle UI  |  F11: Fullscreen  |  ESC: Exit"
@@ -913,6 +923,98 @@ class Monitor:
                                      self.disclaimer_btn_rect.centery - btn_surf.get_height()//2))
     # --- END OF LEGAL PROTECTION BLOCK ---
 
+    def _calibration_status(self):
+        total = max(0.001, getattr(self.sim, "cal_duration", 12.0))
+        remaining = max(0.0, self.sim.cal_time)
+        elapsed = max(0.0, total - remaining)
+
+        if elapsed < 2.0:
+            return "MONITOR SELF TEST", "Checking display, audio path, sensors, and alarm lamps"
+        if elapsed < 10.0:
+            lead_index = int(((elapsed - 2.0) / 8.0) * len(ECG_LEADS))
+            lead_index = max(0, min(len(ECG_LEADS) - 1, lead_index))
+            return f"TESTING LEAD {ECG_LEADS[lead_index]}", "Alarms paused during lead check and calibration"
+        return "CALIBRATING BODY SIGNAL", "Stabilizing body-to-computer signal gates"
+
+    def _draw_calibration_overlay(self):
+        title, subtitle = self._calibration_status()
+        dots = "." * (int(self.uptime * 3) % 4)
+        title_surf = self.font_med.render(f"{title}{dots}", True, (100, 255, 150))
+        sub_surf = self.font_sm.render(subtitle, True, (125, 180, 160))
+        progress_total = max(0.001, getattr(self.sim, "cal_duration", 12.0))
+        progress = 1.0 - (max(0.0, self.sim.cal_time) / progress_total)
+
+        cx = WAVE_W // 2
+        cy = INFO_BAR_H + WAVE_AREA_H // 2
+        self.fx.render_glow_text(
+            self.canvas,
+            self.font_med,
+            f"{title}{dots}",
+            (100, 255, 150),
+            (cx - title_surf.get_width() // 2, cy - 44),
+        )
+        self.canvas.blit(sub_surf, (cx - sub_surf.get_width() // 2, cy + 12))
+
+        bar_w, bar_h = 520, 8
+        bar_x, bar_y = cx - bar_w // 2, cy + 58
+        pygame.draw.rect(self.canvas, (25, 45, 38), (bar_x, bar_y, bar_w, bar_h), border_radius=4)
+        pygame.draw.rect(
+            self.canvas,
+            (70, 220, 140),
+            (bar_x, bar_y, int(bar_w * max(0.0, min(1.0, progress))), bar_h),
+            border_radius=4,
+        )
+
+    def _draw_patient_setup_overlay(self):
+        panel_w, panel_h = 900, 300
+        x = WAVE_W // 2 - panel_w // 2
+        y = INFO_BAR_H + WAVE_AREA_H // 2 - panel_h // 2
+        panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+        panel.fill((6, 10, 12, 235))
+        self.canvas.blit(panel, (x, y))
+        pygame.draw.rect(self.canvas, (70, 210, 140), (x, y, panel_w, panel_h), 2, border_radius=8)
+
+        title = self.font_sm.render("PATIENT NOT CONNECTED", True, (100, 255, 150))
+        sub = self.font_xs.render("Preconfigure presets, rhythms, alarms, and routine preview before hookup.", True, (150, 185, 170))
+        note = self.font_xs.render("Routine playback stays locked until the patient is hooked up.", True, (120, 145, 135))
+        self.canvas.blit(title, (x + panel_w // 2 - title.get_width() // 2, y + 46))
+        self.canvas.blit(sub, (x + panel_w // 2 - sub.get_width() // 2, y + 108))
+        self.canvas.blit(note, (x + panel_w // 2 - note.get_width() // 2, y + 148))
+
+        btn_w, btn_h = 420, 60
+        self.hook_patient_btn_rect = pygame.Rect(x + panel_w // 2 - btn_w // 2, y + panel_h - 88, btn_w, btn_h)
+        btn = self.hook_patient_btn_rect
+        pygame.draw.rect(self.canvas, (0, 120, 65), btn, border_radius=8)
+        pygame.draw.rect(self.canvas, (180, 255, 210), btn, 2, border_radius=8)
+        btn_text = self.font_xs.render("HOOK UP PATIENT", True, (255, 255, 255))
+        self.canvas.blit(btn_text, (btn.centerx - btn_text.get_width() // 2, btn.centery - btn_text.get_height() // 2))
+
+    def _clear_signal_buffers(self):
+        for wc in self.wave_channels:
+            wc.buffer[:] = np.nan
+            wc.sweep_x = 0.0
+            wc.sub_pixel = 0.0
+        for values in self.lead_preview.values():
+            values[:] = np.nan
+        for values in self.debug_buffers.values():
+            values[:] = np.nan
+
+    def _hook_up_patient(self):
+        self.patient_hooked_up = True
+        self.sim.cal_time = getattr(self.sim, "cal_duration", 12.0)
+        self.uptime = 0.0
+        self.heart_on = False
+        self.heart_timer = 0.0
+        self.routine_manager.is_playing = False
+        self.routine_manager.elapsed = 0.0
+        self.routine_manager.current_step = 0
+        self.alarm_logic.active_alarm = None
+        self.alarm_logic.alarm_message = ""
+        self.alarm_logic.alarming_params = {}
+        self.alarm_logic.play_beep = False
+        self.audio.stop_alarm()
+        self._clear_signal_buffers()
+
     def _update(self, dt):
         """Main update tick."""
         # Safety check: ensure mandatory safety watermark opacity hasn't been tampered with.
@@ -930,6 +1032,18 @@ class Monitor:
                 self.disclaimer_timer -= dt
             return
 
+        if not self.patient_hooked_up:
+            self.routine_manager.is_playing = False
+            self.alarm_logic.active_alarm = None
+            self.alarm_logic.alarm_message = ""
+            self.alarm_logic.alarming_params = {}
+            self.alarm_logic.led_left = None
+            self.alarm_logic.led_right = None
+            self.alarm_logic.play_beep = False
+            self.audio.update(dt, None)
+            self._set_diagnostics_snapshot()
+            return
+
         if self.sim.cal_time > 0:
             self.sim.cal_time -= dt
 
@@ -943,8 +1057,9 @@ class Monitor:
         if self.paused:
             return  # Skip all simulation while paused
 
-        self.routine_manager.update(dt)
-        self.sim.update_vitals()
+        if not self.sim.audio_mode_enabled:
+            self.routine_manager.update(dt)
+            self.sim.update_vitals()
         data = self.sim.step(dt)
 
         # Feed waveform channels
@@ -967,12 +1082,27 @@ class Monitor:
 
         # Update DSP
         ecg_buffer = self.wave_channels[0].buffer
-        self.dsp.update(self.sim, dt, ecg_buffer)
+        if self.sim.audio_mode_enabled:
+            self.dsp.ecg_rhythm = getattr(self.sim, "ecg_rhythm", "[Norm] Sinus Rhythm")
+            self.dsp.ecg_ailments = dict(getattr(self.sim, "ecg_ailments", {}))
+            self.dsp.hr = self.sim.hr
+            self.dsp.spo2 = self.sim.spo2
+            self.dsp.rr = self.sim.rr
+            self.dsp.bp_sys = self.sim.bp_sys
+            self.dsp.bp_dia = self.sim.bp_dia
+            self.dsp.bp_map = self.sim.bp_map
+            self.dsp.etco2 = self.sim.etco2
+            self.dsp.temp = self.sim.temp
+            self.dsp._rr_intervals.clear()
+            self.dsp._time_since_last_r = 0.0
+            self.dsp.hr_irregular = False
+        else:
+            self.dsp.update(self.sim, dt, ecg_buffer)
 
         self.uptime += dt
 
         # Pulse beep on R-wave (pitch modulated by HR)
-        if self.sim.r_wave_detected:
+        if self.sim.r_wave_detected and not self.sim.audio_mode_enabled and self.sim.cal_time <= 0:
             self.audio.play_pulse(self.dsp.hr)
             self.heart_on = True
             self.heart_timer = 0.12
@@ -985,7 +1115,16 @@ class Monitor:
         # Alarm logic
         prev_p = self.alarm_logic.active_alarm
         prev_m = self.alarm_logic.alarm_message
-        priority = self.alarm_logic.update(self.dsp, dt)
+        if self.sim.audio_mode_enabled:
+            priority = None
+            self.alarm_logic.active_alarm = None
+            self.alarm_logic.alarm_message = ""
+            self.alarm_logic.alarming_params = {}
+            self.alarm_logic.led_left = None
+            self.alarm_logic.led_right = None
+            self.alarm_logic.play_beep = False
+        else:
+            priority = self.alarm_logic.update(self.dsp, dt)
         
         # If a NEW alarm type or message occurs, break the silence
         if priority != prev_p or self.alarm_logic.alarm_message != prev_m:
@@ -993,9 +1132,11 @@ class Monitor:
                 self.audio.silence_timer = 0.0
         
         # Suppress alarms during boot sequence
-        if self.uptime < 6.0:
+        if self.uptime < 6.0 or self.sim.cal_time > 0:
             priority = None
             self.alarm_logic.active_alarm = None
+            self.alarm_logic.alarm_message = ""
+            self.alarm_logic.alarming_params = {}
             self.alarm_logic.led_left = None
             self.alarm_logic.led_right = None
             self.alarm_logic.play_beep = False
@@ -1039,11 +1180,10 @@ class Monitor:
                     overlay.set_alpha(alpha)
                     self.canvas.blit(overlay, (0, INFO_BAR_H))
             
-            # Boot-up Calibrating Text
-            if self.sim.cal_time > 0:
-                dots = "." * (int(self.uptime * 3) % 4)
-                cal_text = f"CALIBRATING{dots}"
-                self.fx.render_glow_text(self.canvas, self.font_med, cal_text, (100, 255, 150), (WAVE_W // 2 - 120, INFO_BAR_H + WAVE_AREA_H // 2))
+            if not self.patient_hooked_up:
+                self._draw_patient_setup_overlay()
+            elif self.sim.cal_time > 0:
+                self._draw_calibration_overlay()
                 
             self._draw_channel_dividers()
             self._draw_channel_labels()
@@ -1286,6 +1426,8 @@ class Monitor:
                             self._toggle_maximize()
                     elif self.min_btn_rect.collidepoint(cx, cy):
                         self._minimize_window()
+                    elif not self.patient_hooked_up and self.hook_patient_btn_rect.collidepoint(cx, cy):
+                        self._hook_up_patient()
                     elif cy < INFO_BAR_H and not self.fullscreen:
                         self._begin_window_drag((mx, my))
 
@@ -1320,6 +1462,8 @@ class Monitor:
                     elif event.key == pygame.K_F11:
                         self._toggle_fullscreen()
                     elif event.key == pygame.K_SPACE:
+                        if not self.patient_hooked_up:
+                            continue
                         if not self.routine_manager.is_playing:
                             self.routine_manager.elapsed = 0
                             self.routine_manager.current_step = 0
@@ -1341,6 +1485,8 @@ class Monitor:
 
         self.config_win.close()
         self.diagnostics_win.close()
+        self.audio.stop_audio_mode_file()
+        self.sim.stop_live_audio_stream()
         self.config_win.wait_closed(timeout=3.0)
         self.diagnostics_win.wait_closed(timeout=3.0)
         pygame.quit()

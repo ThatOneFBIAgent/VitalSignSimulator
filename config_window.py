@@ -4,10 +4,11 @@ Fully custom dark-themed control window for OBS-friendly recording.
 Runs in a separate thread so it doesn't interfere with the main monitor.
 """
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, filedialog
 import threading
+import os
 
-from simulation import ECG_RHYTHMS, RESP_PATTERNS, ECG_DISPLAY_LEADS
+from simulation import ECG_RHYTHMS, RESP_PATTERNS, ECG_DISPLAY_LEADS, ECG_AILMENTS
 from constants import THEMES, PRESETS
 
 # ─── Design Tokens ───
@@ -60,6 +61,10 @@ HELP_TEXT = {
     "Dim Watermark": "Dims the simulation-only watermark while keeping it visible.",
     "CRT": "Toggles the selected display effect.",
     "Mute Audio": "Mutes pulse and alarm sounds.",
+    "Audio Signal Mode": "Maps a WAV file into traces and synthetic numbers.",
+    "Choose WAV": "Selects the WAV file used by audio signal mode.",
+    "Audio Input Device": "Selects which live audio input feeds signal mode.",
+    "Live Input": "Starts or stops live audio capture for signal mode.",
     "Active Routine": "Selects the scripted scenario to preview and run.",
 }
 
@@ -506,6 +511,85 @@ class ConfigWindow:
         self._add_dropdown(inner, "ECG Rhythm", ECG_RHYTHMS,
                            lambda: self.sim.ecg_rhythm,
                            lambda v: setattr(self.sim, 'ecg_rhythm', v))
+
+        self._section_header(inner, "ECG Ailments")
+        add_row = self._make_row(inner)
+        tk.Label(add_row, text="Add Ailment", font=(FONT, 11), bg=BG, fg=TEXT, anchor="w",
+                 width=18).pack(side=tk.LEFT)
+        ailment_combo = ttk.Combobox(add_row, values=ECG_AILMENTS, state="readonly",
+                                     width=32, font=(FONT, 10))
+        ailment_combo.set(ECG_AILMENTS[0])
+        ailment_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 8))
+        add_btn = tk.Label(add_row, text="[Add]", font=(FONT, 10, "bold"),
+                           bg=SURFACE2, fg=ACCENT, padx=10, pady=4, cursor="hand2")
+        add_btn.pack(side=tk.RIGHT)
+        self._bind_help(add_row, "Adds a morphology ailment layer to the active ECG rhythm.")
+
+        active_ailments = tk.Frame(inner, bg=BG)
+        active_ailments.pack(fill=tk.X, pady=(0, 8))
+
+        def ailment_label(name):
+            return name.replace("[", "").replace("]", "")
+
+        def redraw_ailments(_value=None):
+            for child in active_ailments.winfo_children():
+                child.destroy()
+            active = dict(getattr(self.sim, "ecg_ailments", {}))
+            if not active:
+                tk.Label(active_ailments, text="No active ECG ailments.",
+                         font=(FONT, 10), bg=BG, fg=TEXT2, anchor="w").pack(fill=tk.X, padx=18, pady=4)
+                return
+
+            for ailment, progress in sorted(active.items()):
+                row = tk.Frame(active_ailments, bg=BG, pady=3)
+                row.pack(fill=tk.X, padx=18)
+                tk.Label(row, text=ailment_label(ailment), font=(FONT, 10),
+                         bg=BG, fg=TEXT, anchor="w", width=28).pack(side=tk.LEFT)
+                val_lbl = tk.Label(row, text=f"{int(progress * 100)}%", font=(FONT, 10, "bold"),
+                                   bg=BG, fg="#ffffff", width=5, anchor="e")
+                val_lbl.pack(side=tk.RIGHT, padx=(8, 0))
+                remove_btn = tk.Label(row, text="[X]", font=(FONT, 10, "bold"),
+                                      bg=SURFACE2, fg=RED, padx=7, pady=2, cursor="hand2")
+                remove_btn.pack(side=tk.RIGHT, padx=(6, 0))
+                scale = tk.Scale(row, from_=5, to=100, resolution=5, orient=tk.HORIZONTAL,
+                                 bg=SURFACE2, fg=SURFACE2, highlightthickness=0, troughcolor=SURFACE2,
+                                 activebackground=ACCENT, sliderrelief="raised", sliderlength=20,
+                                 width=10, showvalue=0, bd=1, cursor="hand2")
+                scale.set(progress * 100.0)
+                scale.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(8, 4))
+
+                def update(v, a=ailment, lbl=val_lbl):
+                    pct = float(v)
+                    lbl.config(text=f"{int(pct)}%")
+                    self.sim.set_ailment_progress(a, pct / 100.0)
+
+                def remove(_e=None, a=ailment):
+                    self.sim.set_ailment_progress(a, 0.0)
+                    redraw_ailments()
+
+                scale.config(command=update)
+                remove_btn.bind("<Button-1>", remove)
+
+        def add_ailment(_e=None):
+            self.sim.set_ailment_progress(ailment_combo.get(), 0.5)
+            redraw_ailments()
+
+        add_btn.bind("<Button-1>", add_ailment)
+        redraw_ailments()
+        last_ailments = {"value": tuple(sorted(getattr(self.sim, "ecg_ailments", {}).keys()))}
+
+        def refresh_ailments(value):
+            if value == last_ailments["value"]:
+                return
+            last_ailments["value"] = value
+            redraw_ailments(value)
+
+        self._refresh_jobs.append((
+            None,
+            lambda: tuple(sorted(getattr(self.sim, "ecg_ailments", {}).keys())),
+            refresh_ailments,
+        ))
+
         self._add_dropdown(inner, "Displayed Lead", ECG_DISPLAY_LEADS,
                            lambda: self.sim.ecg_display_lead,
                            lambda v: setattr(self.sim, 'ecg_display_lead', v))
@@ -661,6 +745,156 @@ class ConfigWindow:
         self._add_toggle(inner, "Mute Audio", lambda: self.audio.muted,
             lambda v: setattr(self.audio, 'muted', v))
 
+        self._section_header(inner, "Secret Audio Mode")
+
+        def set_audio_mode(enabled):
+            if enabled:
+                if self.sim.audio_mode_source == "wav" and len(self.sim._audio_samples) > 0:
+                    self.sim.audio_mode_enabled = True
+                    self.audio.play_audio_mode_file(self.sim.audio_mode_path)
+                elif self.sim.audio_mode_source == "live":
+                    self.audio.stop_audio_mode_file()
+                    if self.sim._audio_live_stream is None:
+                        self.sim.start_live_audio_stream(self.sim.audio_mode_live_device)
+                    else:
+                        self.sim.audio_mode_enabled = True
+                else:
+                    self.sim.audio_mode_enabled = False
+            else:
+                self.sim.audio_mode_enabled = False
+                self.audio.stop_audio_mode_file()
+                if self.sim.audio_mode_source == "live":
+                    self.sim.stop_live_audio_stream()
+
+        self._add_toggle(inner, "Audio Signal Mode",
+            lambda: self.sim.audio_mode_enabled,
+            set_audio_mode,
+            "Maps audio into monitor traces and disables clinical alarms.")
+
+        row = self._make_row(inner)
+        tk.Label(row, text="Audio WAV", font=(FONT, 11), bg=BG, fg=TEXT, anchor="w",
+                 width=18).pack(side=tk.LEFT)
+        path_lbl = tk.Label(row, text="No WAV selected", font=(FONT, 9),
+                            bg=BG, fg=TEXT2, anchor="w")
+        path_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 8))
+        choose_btn = tk.Label(row, text="[Choose WAV]", font=(FONT, 10, "bold"),
+                              bg=SURFACE2, fg=CYAN, padx=10, pady=4, cursor="hand2")
+        choose_btn.pack(side=tk.RIGHT)
+        self._bind_help(row, self._help_for("Choose WAV"))
+
+        device_options = self.sim.list_live_audio_devices()
+        if not device_options:
+            device_options = [("Default input", None)]
+        device_by_label = {label: device for label, device in device_options}
+
+        device_row = self._make_row(inner)
+        tk.Label(device_row, text="Audio Input Device", font=(FONT, 11), bg=BG, fg=TEXT, anchor="w",
+                 width=18).pack(side=tk.LEFT)
+        device_combo = ttk.Combobox(
+            device_row,
+            values=list(device_by_label.keys()),
+            state="readonly" if self.sim.audio_mode_live_available else "disabled",
+            width=32,
+            font=(FONT, 10),
+        )
+        current_label = self.sim.audio_mode_live_device_label
+        if current_label not in device_by_label:
+            current_label = "Default input"
+        device_combo.set(current_label)
+        device_combo.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(8, 4))
+        self.sim.audio_mode_live_device_label = current_label
+        self.sim.audio_mode_live_device = device_by_label.get(current_label)
+        self._bind_help(device_row, self._help_for("Audio Input Device"))
+
+        def select_live_device(_=None):
+            label = device_combo.get() or "Default input"
+            self.sim.audio_mode_live_device_label = label
+            self.sim.audio_mode_live_device = device_by_label.get(label)
+            if self.sim.audio_mode_source == "live" and self.sim.audio_mode_enabled:
+                self.sim.start_live_audio_stream(self.sim.audio_mode_live_device)
+            refresh_live()
+
+        device_combo.bind("<<ComboboxSelected>>", select_live_device)
+
+        live_row = self._make_row(inner)
+        tk.Label(live_row, text="Live Input", font=(FONT, 11), bg=BG, fg=TEXT, anchor="w",
+                 width=18).pack(side=tk.LEFT)
+        live_status = tk.Label(live_row, text="", font=(FONT, 9),
+                               bg=BG, fg=TEXT2, anchor="w")
+        live_status.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 8))
+        live_btn = tk.Label(live_row, text="[Start Live]", font=(FONT, 10, "bold"),
+                            bg=SURFACE2, fg=CYAN, padx=10, pady=4, cursor="hand2")
+        live_btn.pack(side=tk.RIGHT)
+        self._bind_help(live_row, self._help_for("Live Input"))
+
+        def refresh_path():
+            if self.sim.audio_mode_path:
+                path_lbl.config(text=os.path.basename(self.sim.audio_mode_path), fg=ACCENT)
+            else:
+                path_lbl.config(text="No WAV selected", fg=TEXT2)
+
+        def refresh_live():
+            if not self.sim.audio_mode_live_available:
+                live_status.config(text=self.sim.audio_mode_live_error, fg=RED)
+                live_btn.config(text="[Unavailable]", fg=DIM)
+            elif self.sim.audio_mode_source == "live" and self.sim.audio_mode_enabled:
+                live_status.config(text=f"Live: {self.sim.audio_mode_live_device_label}", fg=ACCENT)
+                live_btn.config(text="[Stop Live]", fg=RED)
+            elif self.sim.audio_mode_live_error:
+                live_status.config(text=self.sim.audio_mode_live_error, fg=RED)
+                live_btn.config(text="[Start Live]", fg=CYAN)
+            else:
+                live_status.config(text=f"Ready: {self.sim.audio_mode_live_device_label}", fg=TEXT2)
+                live_btn.config(text="[Start Live]", fg=CYAN)
+
+        def choose_audio(_=None):
+            path = filedialog.askopenfilename(
+                title="Choose audio signal WAV",
+                filetypes=[("WAV audio", "*.wav"), ("All files", "*.*")]
+            )
+            if not path:
+                return
+            try:
+                self.sim.stop_live_audio_stream()
+                self.sim.load_audio_stream(path)
+                self.audio.play_audio_mode_file(path)
+                refresh_path()
+                refresh_live()
+            except Exception as exc:
+                self.sim.clear_audio_stream()
+                self.audio.stop_audio_mode_file()
+                path_lbl.config(text=f"Could not load WAV: {exc}", fg=RED)
+
+        choose_btn.bind("<Button-1>", choose_audio)
+
+        def toggle_live(_=None):
+            if not self.sim.audio_mode_live_available:
+                refresh_live()
+                return
+            if self.sim.audio_mode_source == "live" and self.sim.audio_mode_enabled:
+                self.sim.audio_mode_enabled = False
+                self.sim.stop_live_audio_stream()
+            else:
+                self.audio.stop_audio_mode_file()
+                self.sim.start_live_audio_stream(self.sim.audio_mode_live_device)
+            refresh_live()
+
+        live_btn.bind("<Button-1>", toggle_live)
+        refresh_path()
+        refresh_live()
+
+        def refresh_audio_path(_):
+            refresh_path()
+            refresh_live()
+
+        self._refresh_jobs.append((None, lambda: (
+            self.sim.audio_mode_path,
+            self.sim.audio_mode_enabled,
+            self.sim.audio_mode_source,
+            self.sim.audio_mode_live_error,
+            self.sim.audio_mode_live_device_label,
+        ), refresh_audio_path))
+
     def _build_presets(self, parent):
         inner = self._make_scroll_frame(parent)
         self._section_header(inner, "Clinical Presets")
@@ -776,6 +1010,8 @@ class ConfigWindow:
 
         labels = {
             "ecg_rhythm": "ECG rhythm",
+            "ecg_ailments": "ECG ailments",
+            "rhythm_mix": "Rhythm layers",
             "resp_pattern": "Resp pattern",
             "probe_etco2": "EtCO2 probe",
             "probe_temp": "Temp probe",
@@ -795,6 +1031,13 @@ class ConfigWindow:
         def state_text(state):
             parts = []
             for key, value in state.items():
+                if key in ("ecg_ailments", "rhythm_mix") and isinstance(value, dict):
+                    if value:
+                        mix = ", ".join(f"{rhythm}: {int(float(progress) * 100)}%" for rhythm, progress in value.items())
+                    else:
+                        mix = "clear"
+                    parts.append(f"{labels.get(key, key)} -> {mix}")
+                    continue
                 parts.append(f"{labels.get(key, key)} -> {value}")
             return "; ".join(parts) if parts else "No state change"
 
@@ -823,8 +1066,11 @@ class ConfigWindow:
                          justify=tk.LEFT, wraplength=520).pack(side=tk.LEFT, fill=tk.X, expand=True, pady=5)
 
         def update_play_button():
+            hooked = True if not self.monitor else self.monitor.patient_hooked_up
             if rm.is_playing:
                 play_btn.config(text="STOP ROUTINE", bg="#2a0a0a", fg=RED)
+            elif not hooked:
+                play_btn.config(text="HOOK UP PATIENT FIRST", bg=SURFACE2, fg=DIM)
             else:
                 play_btn.config(text="START ROUTINE", bg="#0a2a18", fg=ACCENT)
 
@@ -834,6 +1080,11 @@ class ConfigWindow:
             redraw_preview()
 
         def toggle(_=None):
+            if self.monitor and not self.monitor.patient_hooked_up:
+                rm.is_playing = False
+                update_play_button()
+                redraw_preview()
+                return
             rm.toggle_play()
             update_play_button()
             redraw_preview()
@@ -846,7 +1097,8 @@ class ConfigWindow:
         last_seen = {"value": None}
 
         def refresh_key():
-            return (rm.active_routine_name, rm.current_step, rm.is_playing, int(rm.elapsed))
+            hooked = True if not self.monitor else self.monitor.patient_hooked_up
+            return (rm.active_routine_name, rm.current_step, rm.is_playing, int(rm.elapsed), hooked)
 
         def refresh_routines(value):
             if value == last_seen["value"]:

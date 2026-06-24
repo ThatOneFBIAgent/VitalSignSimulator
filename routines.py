@@ -40,8 +40,15 @@ class RoutineManager:
             step = self.active_routine[self.current_step]
             if self.elapsed >= step["t"]:
                 state = step.get("state", {})
+                has_ailment_state = "ecg_ailments" in state or "rhythm_mix" in state
+                if "ecg_rhythm" in state and not has_ailment_state and hasattr(self.sim, "clear_ecg_ailments"):
+                    self.sim.clear_ecg_ailments()
                 for k, v in state.items():
-                    if k in self.sim.targets:
+                    if k == "ecg_ailments" and hasattr(self.sim, "set_ecg_ailments"):
+                        self.sim.set_ecg_ailments(v)
+                    elif k == "rhythm_mix" and hasattr(self.sim, "set_rhythm_mix"):
+                        self.sim.set_rhythm_mix(v)
+                    elif k in self.sim.targets:
                         self.sim.targets[k]["value"] = v
                     elif hasattr(self.sim, k):
                         setattr(self.sim, k, v)
@@ -59,6 +66,20 @@ ROUTINES = {
         {"t": 15, "state": {"ecg_rhythm": "[Vent] VTach"}},
         {"t": 30, "state": {"ecg_rhythm": "[Vent] VFib"}},
         {"t": 50, "state": {"ecg_rhythm": "[Arrest] Asystole"}}
+    ],
+    "Layered ECG Demo (VTach + VFib + STEMI)": [
+        {"t": 0,  "state": {"ecg_rhythm": "[Norm] Sinus Rhythm", "hr": 95, "ecg_ailments": {}}},
+        {"t": 8,  "state": {"ecg_ailments": {"[Ischemia] Anterior STEMI": 0.35}}},
+        {"t": 18, "state": {"hr": 145, "ecg_ailments": {"[Vent] VTach": 0.50, "[Ischemia] Anterior STEMI": 0.60}}},
+        {"t": 32, "state": {"hr": 185, "ecg_ailments": {"[Vent] VTach": 0.75, "[Vent] VFib": 0.50, "[Ischemia] Anterior STEMI": 0.75}}},
+        {"t": 48, "state": {"ecg_rhythm": "[Vent] VFib", "hr": 0, "ecg_ailments": {"[Ischemia] Anterior STEMI": 0.30}}},
+        {"t": 60, "state": {"ecg_rhythm": "[Arrest] Asystole", "ecg_ailments": {}}}
+    ],
+    "NSTEMI Morphology Demo": [
+        {"t": 0,  "state": {"ecg_rhythm": "[Norm] Sinus Rhythm", "hr": 82, "ecg_ailments": {}}},
+        {"t": 15, "state": {"ecg_ailments": {"[Ischemia] NSTEMI": 0.35}}},
+        {"t": 35, "state": {"ecg_ailments": {"[Ischemia] NSTEMI": 0.70}, "hr": 104}},
+        {"t": 55, "state": {"ecg_ailments": {"[Ischemia] NSTEMI": 0.45}, "hr": 88}}
     ],
     "Malignant Hyperthermia Onset": [
         {"t": 0,  "state": {"temp": 37.0, "etco2": 40, "hr": 90}},

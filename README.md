@@ -62,10 +62,12 @@ VitalSign Pro is designed for clean recording and streaming:
 - Python 3.8+
 - Pygame
 - Numpy
+- SoundDevice (optional, for live audio signal input)
 
 ### Quick Start
 ```bash
 pip install pygame numpy
+# Optional: pip install sounddevice
 python main.py
 ```
 

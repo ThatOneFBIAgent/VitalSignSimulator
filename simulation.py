@@ -13,6 +13,14 @@ import random
 import time
 import hashlib
 import sys
+import wave
+import threading
+from collections import deque
+
+try:
+    import sounddevice as sd
+except Exception:
+    sd = None
 
 ECG_RHYTHMS = [
     "[Norm] Sinus Rhythm", "[Sinus] Bradycardia", "[Sinus] Tachycardia",
@@ -27,6 +35,33 @@ ECG_RHYTHMS = [
     "[Ischemia] Anterior STEMI", "[Ischemia] Inferior STEMI",
     "[Arrest] Asystole", "[Arrest] PEA"
 ]
+ECG_AILMENTS = [
+    "[Atrial] PACs",
+    "[Vent] PVCs", "[Vent] Bigeminy", "[Vent] Trigeminy",
+    "[Vent] VTach", "[Vent] VFib", "[Vent] Torsades",
+    "[Block] 1st Deg AV", "[Block] Wenckebach", "[Block] Mobitz II",
+    "[Block] 3rd Deg AV", "[Block] RBBB", "[Block] LBBB",
+    "[Preexcitation] WPW",
+    "[Repol] Long QT", "[Repol] Hyperkalemia",
+    "[Ischemia] Anterior STEMI", "[Ischemia] Inferior STEMI", "[Ischemia] NSTEMI",
+]
+ECG_AILMENT_CONFLICTS = {
+    "[Vent] PVCs": {"[Vent] Bigeminy", "[Vent] Trigeminy"},
+    "[Vent] Bigeminy": {"[Vent] PVCs", "[Vent] Trigeminy"},
+    "[Vent] Trigeminy": {"[Vent] PVCs", "[Vent] Bigeminy"},
+    "[Block] 1st Deg AV": {"[Block] Wenckebach", "[Block] Mobitz II", "[Block] 3rd Deg AV"},
+    "[Block] Wenckebach": {"[Block] 1st Deg AV", "[Block] Mobitz II", "[Block] 3rd Deg AV"},
+    "[Block] Mobitz II": {"[Block] 1st Deg AV", "[Block] Wenckebach", "[Block] 3rd Deg AV"},
+    "[Block] 3rd Deg AV": {"[Block] 1st Deg AV", "[Block] Wenckebach", "[Block] Mobitz II"},
+    "[Block] RBBB": {"[Block] LBBB", "[Preexcitation] WPW"},
+    "[Block] LBBB": {"[Block] RBBB", "[Preexcitation] WPW"},
+    "[Preexcitation] WPW": {"[Block] RBBB", "[Block] LBBB"},
+    "[Ischemia] Anterior STEMI": {"[Ischemia] Inferior STEMI", "[Ischemia] NSTEMI"},
+    "[Ischemia] Inferior STEMI": {"[Ischemia] Anterior STEMI", "[Ischemia] NSTEMI"},
+    "[Ischemia] NSTEMI": {"[Ischemia] Anterior STEMI", "[Ischemia] Inferior STEMI"},
+    "[Vent] Torsades": {"[Vent] VTach"},
+    "[Vent] VTach": {"[Vent] Torsades"},
+}
 RESP_PATTERNS = ["Eupnea (Normal)", "Hyperpnea", "Bradypnea", "Tachypnea", "Apnea", "Cheyne-Stokes", "Biot", "Kussmaul"]
 ECG_LEADS = ["I", "II", "III", "aVR", "aVL", "aVF", "V1", "V2", "V3", "V4", "V5", "V6"]
 ECG_DISPLAY_LEADS = ["Clean"] + ECG_LEADS
@@ -70,6 +105,8 @@ class PhysioSim:
 
         # --- ECG Rhythm ---
         self.ecg_rhythm = "[Norm] Sinus Rhythm"
+        self.ecg_ailments = {}
+        self.rhythm_mix = self.ecg_ailments
         self._beat_counter = 0
         self._pvc_interval = random.randint(4, 10)
         self._pac_interval = random.randint(5, 12)
@@ -95,6 +132,26 @@ class PhysioSim:
         self.lead_artifact_level = 0.18
         self.etco2_variability = 0.12
         self.etco2_breath_variation = 1.0
+        self.audio_mode_enabled = False
+        self.audio_mode_path = ""
+        self.audio_mode_source = "wav"
+        self.audio_mode_live_available = sd is not None
+        self.audio_mode_live_error = "" if sd is not None else "Install sounddevice for live input."
+        self.audio_mode_live_device = None
+        self.audio_mode_live_device_label = "Default input"
+        self._audio_samples = np.array([], dtype=np.float64)
+        self._audio_index = 0
+        self._audio_fast_env = 0.0
+        self._audio_slow_env = 0.0
+        self._audio_resp_phase = 0.0
+        self._audio_vitals = {
+            "hr": self.hr, "spo2": self.spo2, "rr": self.rr,
+            "bp_sys": self.bp_sys, "bp_dia": self.bp_dia,
+            "etco2": self.etco2, "temp": self.temp,
+        }
+        self._audio_live_stream = None
+        self._audio_live_buffer = deque(maxlen=sample_rate * 8)
+        self._audio_live_lock = threading.Lock()
         self._lead_pop_until = {lead: 0.0 for lead in ECG_LEADS}
         self._lead_pop_value = {lead: 0.0 for lead in ECG_LEADS}
         self._motion_burst_until = 0.0
@@ -105,7 +162,8 @@ class PhysioSim:
         self._prev_ecg = 0.0
         self._aflutter_hr = 100.0
         
-        self.cal_time = 6.0  # Startup calibration timer
+        self.cal_duration = 12.0
+        self.cal_time = self.cal_duration  # Startup calibration timer
         self.variation_factor = 1.0
         self.resp_variation = 1.0
         self.pleth_variation = 1.0
@@ -115,6 +173,7 @@ class PhysioSim:
         """Apply a preset dictionary to targets and live values."""
         # Reset rhythm and probe overrides to baseline
         self.ecg_rhythm = "[Norm] Sinus Rhythm"
+        self.clear_ecg_ailments()
         self.resp_pattern = "Eupnea (Normal)"
         self.probe_etco2 = True
         self.probe_temp = True
@@ -132,6 +191,279 @@ class PhysioSim:
                 t["max"] = val + padding
         self.bp_map = self.bp_dia + (self.bp_sys - self.bp_dia) / 3.0
         self.display["bp_map"] = self.bp_map
+
+    def _sync_legacy_rhythm_mix(self):
+        self.rhythm_mix = self.ecg_ailments
+
+    def _allowed_ailment(self, ailment):
+        return ailment in ECG_AILMENTS
+
+    def _remove_conflicting_ailments(self, mix, ailment):
+        for conflict in ECG_AILMENT_CONFLICTS.get(ailment, set()):
+            mix.pop(conflict, None)
+        for other, conflicts in ECG_AILMENT_CONFLICTS.items():
+            if ailment in conflicts:
+                mix.pop(other, None)
+
+    def set_ecg_ailments(self, ailments):
+        """Set optional ECG ailment severity values.
+
+        `ailments` accepts {ailment_name: 0.0..1.0}, percentages in 0..100,
+        or [{"ailment": name, "progress": value}] entries from routines.
+        """
+        normalized = {}
+
+        if ailments is None:
+            self.ecg_ailments = {}
+            self._sync_legacy_rhythm_mix()
+            return
+
+        if isinstance(ailments, dict):
+            items = ailments.items()
+        elif isinstance(ailments, (list, tuple)):
+            items = []
+            for entry in ailments:
+                if isinstance(entry, dict):
+                    rhythm = entry.get("ailment") or entry.get("rhythm") or entry.get("name")
+                    progress = entry.get("progress", entry.get("value", 0.0))
+                    items.append((rhythm, progress))
+                elif isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                    items.append((entry[0], entry[1]))
+        else:
+            items = []
+
+        for rhythm, progress in items:
+            if not self._allowed_ailment(rhythm):
+                continue
+            try:
+                progress = float(progress)
+            except (TypeError, ValueError):
+                continue
+            if progress > 1.0:
+                progress /= 100.0
+            progress = max(0.0, min(1.0, progress))
+            if progress > 0.001:
+                self._remove_conflicting_ailments(normalized, rhythm)
+                normalized[rhythm] = progress
+
+        self.ecg_ailments = normalized
+        self._sync_legacy_rhythm_mix()
+
+    def set_rhythm_mix(self, mix):
+        """Backward-compatible alias for older routine/editor output."""
+        self.set_ecg_ailments(mix)
+
+    def clear_ecg_ailments(self):
+        self.ecg_ailments = {}
+        self._sync_legacy_rhythm_mix()
+
+    def clear_rhythm_mix(self):
+        self.clear_ecg_ailments()
+
+    def set_ailment_progress(self, ailment, progress):
+        mix = dict(self.ecg_ailments)
+        try:
+            progress = float(progress)
+        except (TypeError, ValueError):
+            return
+        if progress > 1.0:
+            progress /= 100.0
+        progress = max(0.0, min(1.0, progress))
+        if self._allowed_ailment(ailment) and progress > 0.001:
+            self._remove_conflicting_ailments(mix, ailment)
+            mix[ailment] = progress
+        else:
+            mix.pop(ailment, None)
+        self.set_ecg_ailments(mix)
+
+    def get_ailment_progress(self, ailment):
+        return float(self.ecg_ailments.get(ailment, 0.0))
+
+    def set_rhythm_progress(self, rhythm, progress):
+        """Backward-compatible alias for older UI code."""
+        self.set_ailment_progress(rhythm, progress)
+
+    def get_rhythm_progress(self, rhythm):
+        return self.get_ailment_progress(rhythm)
+
+    def _active_rhythm_or_ailment(self, rhythm):
+        return rhythm == self.ecg_rhythm or self.get_ailment_progress(rhythm) > 0.001
+
+    def _rhythm_progress_contains(self, *needles):
+        progress = 0.0
+        rhythms = [(self.ecg_rhythm, 1.0)] + list(self.ecg_ailments.items())
+        for rhythm, value in rhythms:
+            if any(needle in rhythm for needle in needles):
+                progress = max(progress, float(value))
+        return max(0.0, min(1.0, progress))
+
+    def _dangerous_rhythm_burden(self):
+        return max(
+            self._rhythm_progress_contains("VFib", "Torsades", "Asystole"),
+            self._rhythm_progress_contains("PEA") * 0.95,
+            self.get_rhythm_progress("[Vent] VTach") * 0.35,
+        )
+
+    def _perfusion_factor(self):
+        return max(0.0, min(1.0, 1.0 - self._dangerous_rhythm_burden()))
+
+    def load_audio_stream(self, path):
+        """Load a WAV file for secret audio signal mode."""
+        with wave.open(path, "rb") as wf:
+            channels = wf.getnchannels()
+            width = wf.getsampwidth()
+            rate = wf.getframerate()
+            frames = wf.readframes(wf.getnframes())
+
+        if width == 1:
+            data = np.frombuffer(frames, dtype=np.uint8).astype(np.float64)
+            data = (data - 128.0) / 128.0
+        elif width == 2:
+            data = np.frombuffer(frames, dtype=np.int16).astype(np.float64) / 32768.0
+        elif width == 4:
+            data = np.frombuffer(frames, dtype=np.int32).astype(np.float64) / 2147483648.0
+        else:
+            raise ValueError("Only 8-bit, 16-bit, or 32-bit PCM WAV files are supported.")
+
+        if channels > 1:
+            data = data.reshape(-1, channels).mean(axis=1)
+
+        if rate != self.sample_rate and len(data) > 1:
+            old_x = np.linspace(0.0, 1.0, len(data), endpoint=False)
+            new_len = max(1, int(len(data) * self.sample_rate / rate))
+            new_x = np.linspace(0.0, 1.0, new_len, endpoint=False)
+            data = np.interp(new_x, old_x, data)
+
+        peak = float(np.max(np.abs(data))) if len(data) else 0.0
+        if peak > 0:
+            data = data / peak
+
+        self._audio_samples = data.astype(np.float64)
+        self._audio_index = 0
+        self._audio_fast_env = 0.0
+        self._audio_slow_env = 0.0
+        self.audio_mode_path = path
+        self.audio_mode_source = "wav"
+        self.audio_mode_enabled = len(self._audio_samples) > 0
+        return self.audio_mode_enabled
+
+    def clear_audio_stream(self):
+        self.audio_mode_enabled = False
+        self.audio_mode_path = ""
+        self.audio_mode_source = "wav"
+        self._audio_samples = np.array([], dtype=np.float64)
+        self._audio_index = 0
+        self.stop_live_audio_stream()
+
+    def list_live_audio_devices(self):
+        """Return selectable live audio input devices for the config panel."""
+        if sd is None:
+            self.audio_mode_live_available = False
+            self.audio_mode_live_error = "Install sounddevice for live input."
+            return []
+
+        try:
+            devices = sd.query_devices()
+        except Exception as exc:
+            self.audio_mode_live_available = False
+            self.audio_mode_live_error = str(exc)
+            return []
+
+        self.audio_mode_live_available = True
+        options = [("Default input", None)]
+        for index, device in enumerate(devices):
+            if int(device.get("max_input_channels", 0)) <= 0:
+                continue
+            name = device.get("name", f"Device {index}")
+            channels = int(device.get("max_input_channels", 0))
+            options.append((f"{index}: {name} ({channels} in)", index))
+        return options
+
+    def start_live_audio_stream(self, device=None):
+        """Start optional live audio capture if sounddevice is installed."""
+        if sd is None:
+            self.audio_mode_live_error = "Install sounddevice for live input."
+            return False
+
+        self.stop_live_audio_stream()
+        self.audio_mode_live_error = ""
+        if device is None:
+            device = self.audio_mode_live_device
+        live_rate = 44100
+        try:
+            info = sd.query_devices(device, "input")
+            live_rate = int(info.get("default_samplerate") or live_rate)
+        except Exception:
+            pass
+
+        def callback(indata, frames, time_info, status):
+            if status:
+                self.audio_mode_live_error = str(status)
+            data = np.asarray(indata, dtype=np.float64)
+            if data.ndim > 1:
+                data = data.mean(axis=1)
+            if len(data) == 0:
+                return
+
+            # Downsample callback audio into the simulator's 250 Hz signal stream.
+            target_count = max(1, int(round(len(data) * self.sample_rate / max(1, live_rate))))
+            if target_count < len(data):
+                idx = np.linspace(0, len(data) - 1, target_count).astype(np.int64)
+                reduced = data[idx]
+            else:
+                reduced = data
+            peak = np.max(np.abs(reduced)) if len(reduced) else 0.0
+            if peak > 1.0:
+                reduced = reduced / peak
+            with self._audio_live_lock:
+                self._audio_live_buffer.extend(float(x) for x in reduced)
+
+        try:
+            self._audio_live_stream = sd.InputStream(
+                device=device,
+                channels=1,
+                samplerate=live_rate,
+                callback=callback,
+                blocksize=1024,
+            )
+            self._audio_live_stream.start()
+        except Exception as exc:
+            self.audio_mode_live_error = str(exc)
+            self._audio_live_stream = None
+            return False
+
+        self.audio_mode_source = "live"
+        self.audio_mode_enabled = True
+        self.audio_mode_live_device = device
+        return True
+
+    def stop_live_audio_stream(self):
+        stream = self._audio_live_stream
+        self._audio_live_stream = None
+        if stream is not None:
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:
+                pass
+        with self._audio_live_lock:
+            self._audio_live_buffer.clear()
+
+    def _next_audio_sample(self):
+        if self.audio_mode_source == "live":
+            with self._audio_live_lock:
+                if self._audio_live_buffer:
+                    return float(self._audio_live_buffer.popleft())
+            return 0.0
+
+        if len(self._audio_samples) == 0:
+            return 0.0
+        x = float(self._audio_samples[self._audio_index])
+        self._audio_index = (self._audio_index + 1) % len(self._audio_samples)
+        return x
+
+    def _audio_has_source(self):
+        return self.audio_mode_source == "live" or len(self._audio_samples) > 0
 
     def _drift(self, current, key):
         """Ornstein-Uhlenbeck drift — smooth mean-reversion with gentle noise."""
@@ -154,7 +486,7 @@ class PhysioSim:
     def _smooth_display(self):
         """Exponentially smooth display values to prevent jitter in readouts."""
         # Use faster smoothing (faster crash) if in cardiac arrest
-        a = 0.2 if self.ecg_rhythm in ("VFib", "Asystole") else 0.06
+        a = 0.2 if self._dangerous_rhythm_burden() > 0.45 else 0.06
         self.display["hr"]     = self.display["hr"]     * (1 - a) + self.hr * a
         self.display["spo2"]   = self.display["spo2"]   * (1 - a) + self.spo2 * a
         self.display["rr"]     = self.display["rr"]     * (1 - a) + self.rr * a
@@ -167,7 +499,7 @@ class PhysioSim:
 
     def update_vitals(self):
         """Call once per frame to drift vital signs naturally."""
-        if "[Arrest] VFib" in self.ecg_rhythm or "[Arrest] Asystole" in self.ecg_rhythm or "[Arrest] PEA" in self.ecg_rhythm or "[Vent] VFib" in self.ecg_rhythm or "[Vent] Torsades" in self.ecg_rhythm:
+        if self._dangerous_rhythm_burden() > 0.55:
             if "PEA" not in self.ecg_rhythm:
                 self.hr = max(0.0, self.hr - 20.0 * self.dt) # Slow decay of internal HR
             else:
@@ -235,11 +567,12 @@ class PhysioSim:
         
         # --- Arrhythmia Detection ---
         self.hr_irregular = False
-        if any(name in self.ecg_rhythm for name in ("AFib", "PACs", "PVCs", "Bigeminy", "Trigeminy", "Arrhythmia")):
+        active_rhythm_text = " ".join([self.ecg_rhythm] + list(self.ecg_ailments.keys()))
+        if any(name in active_rhythm_text for name in ("AFib", "PACs", "PVCs", "Bigeminy", "Trigeminy", "Arrhythmia")):
             self.hr_irregular = True
-        if "Block" in self.ecg_rhythm or "Torsades" in self.ecg_rhythm:
+        if "Block" in active_rhythm_text or "Torsades" in active_rhythm_text:
             self.hr_irregular = True
-        if "VFib" in self.ecg_rhythm and "warning" in self.ecg_rhythm: # For early warning
+        if "VFib" in active_rhythm_text and "warning" in active_rhythm_text: # For early warning
             self.hr_irregular = True
 
         # Enforce physical BP limits (diastolic can never be higher than systolic)
@@ -436,12 +769,12 @@ class PhysioSim:
         reciprocal = -0.04 if inferior and 0.43 <= phase <= 0.60 else 0.0
         return base + st + reciprocal + random.gauss(0, 0.004)
 
-    def _get_ecg_point(self, phase):
+    def _get_ecg_point(self, phase, rhythm=None):
         """Dispatch to the active rhythm's ECG generator."""
         if not self._safety_verified:
             return random.gauss(0, 0.01) # Flatline if tampered
             
-        rhythm = self.ecg_rhythm
+        rhythm = rhythm or self.ecg_rhythm
         if rhythm in ("[Norm] Sinus Rhythm", "[Sinus] Bradycardia", "[Sinus] Tachycardia", "[Sinus] Arrhythmia", "[Sinus] IST"):
             return self._ecg_normal(phase)
         elif rhythm == "[Atrial] SVT":
@@ -496,8 +829,8 @@ class PhysioSim:
             return self._ecg_normal(phase)
         return self._ecg_normal(phase)
 
-    def _effective_hr(self):
-        rhythm = self.ecg_rhythm
+    def _effective_hr(self, rhythm=None):
+        rhythm = rhythm or self.ecg_rhythm
         hr = max(0.0, self.hr)
         if rhythm == "[Sinus] Bradycardia":
             return min(60.0, max(35.0, hr))
@@ -521,13 +854,13 @@ class PhysioSim:
 
     def _qrs_suppressed_this_cycle(self):
         rhythm = self.ecg_rhythm
-        if rhythm == "[Block] Wenckebach" and self._beat_counter % 4 == 3:
+        if (rhythm == "[Block] Wenckebach" or self.get_ailment_progress("[Block] Wenckebach") > 0.001) and self._beat_counter % 4 == 3:
             return True
-        if rhythm == "[Block] Mobitz II" and self._beat_counter % 4 == 3:
+        if (rhythm == "[Block] Mobitz II" or self.get_ailment_progress("[Block] Mobitz II") > 0.001) and self._beat_counter % 4 == 3:
             return True
         return False
 
-    def _derive_ecg_leads(self, base, phase):
+    def _derive_ecg_leads(self, base, phase, rhythm=None):
         """Approximate a 12-lead set from the active rhythm's primary ECG."""
         p = np.exp(-((phase - 0.12)**2) / (2 * 0.018**2))
         r = np.exp(-((phase - 0.38)**2) / (2 * 0.006**2))
@@ -553,7 +886,7 @@ class PhysioSim:
         for lead, (gain, p_adj, r_adj, s_adj, t_adj) in profiles.items():
             leads[lead] = gain * base + p_adj * p + r_adj * r + s_adj * s + t_adj * t_w
 
-        rhythm = self.ecg_rhythm
+        rhythm = rhythm or self.ecg_rhythm
         if rhythm == "[Block] RBBB":
             late_r = np.exp(-((phase - 0.45)**2) / (2 * 0.016**2))
             wide_s = np.exp(-((phase - 0.49)**2) / (2 * 0.020**2))
@@ -599,6 +932,48 @@ class PhysioSim:
                 leads[lead] -= 0.08 * st
         return leads
 
+    def _apply_ischemia_overlay(self, leads, rhythm, phase, progress):
+        st = progress if 0.43 <= phase <= 0.62 else 0.0
+        if rhythm == "[Ischemia] Anterior STEMI":
+            for lead in ("V2", "V3", "V4"):
+                leads[lead] += 0.24 * st
+            for lead in ("II", "III", "aVF"):
+                leads[lead] -= 0.09 * st
+        elif rhythm == "[Ischemia] Inferior STEMI":
+            for lead in ("II", "III", "aVF"):
+                leads[lead] += 0.22 * st
+            for lead in ("I", "aVL", "V2"):
+                leads[lead] -= 0.09 * st
+        elif rhythm == "[Ischemia] NSTEMI":
+            depression = progress if 0.43 <= phase <= 0.64 else 0.0
+            t_inversion = progress * np.exp(-((phase - 0.64)**2) / (2 * 0.055**2))
+            for lead in ("I", "II", "V4", "V5", "V6"):
+                leads[lead] -= 0.10 * depression + 0.16 * t_inversion
+            for lead in ("aVR", "V1"):
+                leads[lead] += 0.05 * depression
+
+    def _compose_ecg_leads(self, phase):
+        """Generate the native 12-lead body signal with optional rhythm layers."""
+        primary_base = self._get_ecg_point(phase, self.ecg_rhythm)
+        leads = self._derive_ecg_leads(primary_base, phase, self.ecg_rhythm)
+
+        for rhythm, progress in list(self.ecg_ailments.items()):
+            progress = max(0.0, min(1.0, float(progress)))
+            if progress <= 0.001:
+                continue
+            if rhythm in ("[Ischemia] Anterior STEMI", "[Ischemia] Inferior STEMI", "[Ischemia] NSTEMI"):
+                self._apply_ischemia_overlay(leads, rhythm, phase, progress)
+                continue
+            if rhythm == self.ecg_rhythm:
+                continue
+
+            layer_base = self._get_ecg_point(phase, rhythm)
+            layer_leads = self._derive_ecg_leads(layer_base, phase, rhythm)
+            for lead in ECG_LEADS:
+                leads[lead] = (leads[lead] * (1.0 - progress)) + (layer_leads[lead] * progress)
+
+        return leads
+
     def _consolidated_ecg(self, leads):
         """Computer-combined clean ECG derived from the full 12-lead body signal."""
         weights = {
@@ -639,6 +1014,90 @@ class PhysioSim:
             muscle = random.gauss(0, (0.008 + 0.055 * level) * lead_factor)
             artifacted[lead] = leads[lead] + common_wander * lead_factor + mains + motion + pop + muscle
         return artifacted
+
+    def _step_audio_mode(self, num_points):
+        ecg_out, pleth_out, resp_out, abp_out, co2_out = [], [], [], [], []
+        ecg_leads_out = {lead: [] for lead in ECG_LEADS}
+        pure_out = {"ecg": [], "pleth": [], "resp": [], "abp": [], "co2": []}
+        gate_out = {"r_gate": [], "co2_gate": [], "resp_insp": []}
+        self.r_wave_detected = False
+
+        if not self._audio_has_source():
+            return {
+                "ecg": ecg_out, "pleth": pleth_out, "resp": resp_out,
+                "abp": abp_out, "co2": co2_out,
+                "ecg_leads": ecg_leads_out, "pure": pure_out, "gates": gate_out,
+            }
+
+        gains = {
+            "I": 0.55, "II": 0.9, "III": 0.35, "aVR": -0.45, "aVL": 0.35, "aVF": 0.65,
+            "V1": -0.25, "V2": 0.15, "V3": 0.45, "V4": 0.8, "V5": 0.7, "V6": 0.55,
+        }
+        chunk_abs = []
+
+        for _ in range(num_points):
+            x = self._next_audio_sample()
+            ax = abs(x)
+            chunk_abs.append(ax)
+
+            self._audio_fast_env = self._audio_fast_env * 0.82 + ax * 0.18
+            self._audio_slow_env = self._audio_slow_env * 0.992 + ax * 0.008
+            self._audio_resp_phase = (self._audio_resp_phase + self.dt * (0.08 + self._audio_slow_env * 0.45)) % 1.0
+
+            ecg_val = x * 0.85 + random.gauss(0, 0.01)
+            pleth_val = min(1.2, self._audio_fast_env * 1.9)
+            resp_val = np.sin(2 * np.pi * self._audio_resp_phase) * min(0.9, self._audio_slow_env * 2.6)
+            abp_val = 55.0 + self._audio_fast_env * 125.0 + x * 8.0
+            co2_val = 3.0 + self._audio_slow_env * 75.0 + max(0.0, resp_val) * 8.0
+            lead_vals = {lead: ecg_val * gain + random.gauss(0, 0.004) for lead, gain in gains.items()}
+
+            ecg_out.append(ecg_val)
+            pleth_out.append(pleth_val)
+            resp_out.append(resp_val)
+            abp_out.append(abp_val)
+            co2_out.append(co2_val)
+            for lead in ECG_LEADS:
+                ecg_leads_out[lead].append(lead_vals[lead])
+            pure_out["ecg"].append(ecg_val)
+            pure_out["pleth"].append(pleth_val)
+            pure_out["resp"].append(resp_val)
+            pure_out["abp"].append(abp_val)
+            pure_out["co2"].append(co2_val)
+            gate_out["r_gate"].append(0.0)
+            gate_out["co2_gate"].append(1.0 if co2_val > 20.0 else 0.0)
+            gate_out["resp_insp"].append(1.0 if resp_val > 0.0 else 0.0)
+
+        energy = float(np.mean(chunk_abs)) if chunk_abs else 0.0
+        peak = float(np.max(chunk_abs)) if chunk_abs else 0.0
+        targets = {
+            "hr": min(240.0, 35.0 + energy * 260.0),
+            "spo2": max(70.0, min(100.0, 100.0 - peak * 18.0)),
+            "rr": min(45.0, 4.0 + self._audio_slow_env * 55.0),
+            "bp_sys": min(220.0, 85.0 + self._audio_fast_env * 145.0),
+            "bp_dia": min(130.0, 45.0 + self._audio_slow_env * 85.0),
+            "etco2": min(85.0, 5.0 + self._audio_slow_env * 90.0),
+            "temp": 36.0 + self._audio_slow_env * 4.0,
+        }
+        alpha = 0.12
+        for key, target in targets.items():
+            self._audio_vitals[key] = self._audio_vitals[key] * (1 - alpha) + target * alpha
+
+        self.hr = self._audio_vitals["hr"]
+        self.spo2 = self._audio_vitals["spo2"]
+        self.rr = self._audio_vitals["rr"]
+        self.bp_sys = self._audio_vitals["bp_sys"]
+        self.bp_dia = self._audio_vitals["bp_dia"]
+        self.bp_map = self.bp_dia + (self.bp_sys - self.bp_dia) / 3.0
+        self.etco2 = self._audio_vitals["etco2"]
+        self.temp = self._audio_vitals["temp"]
+
+        return {
+            "ecg": ecg_out, "pleth": pleth_out, "resp": resp_out,
+            "abp": abp_out, "co2": co2_out,
+            "ecg_leads": ecg_leads_out,
+            "pure": pure_out,
+            "gates": gate_out,
+        }
 
     # ──── Other Waveforms ────
 
@@ -721,6 +1180,9 @@ class PhysioSim:
         num_points = int(self.point_accum)
         self.point_accum -= num_points
 
+        if self.audio_mode_enabled:
+            return self._step_audio_mode(num_points)
+
         ecg_out, pleth_out, resp_out, abp_out, co2_out = [], [], [], [], []
         ecg_leads_out = {lead: [] for lead in ECG_LEADS}
         pure_out = {"ecg": [], "pleth": [], "resp": [], "abp": [], "co2": []}
@@ -735,11 +1197,15 @@ class PhysioSim:
 
             if "AFib" in self.ecg_rhythm:
                 hr_rate *= self._afib_rr_mod
-            elif "PACs" in self.ecg_rhythm and self._in_pac:
+            elif ("PACs" in self.ecg_rhythm or self.get_ailment_progress("[Atrial] PACs") > 0.001) and self._in_pac:
                 hr_rate *= 1.35
-            elif "PVCs" in self.ecg_rhythm and self._in_pvc:
+            elif ("PVCs" in self.ecg_rhythm or self.get_ailment_progress("[Vent] PVCs") > 0.001) and self._in_pvc:
                 hr_rate *= 1.25
-            elif "Bigeminy" in self.ecg_rhythm or "Trigeminy" in self.ecg_rhythm:
+            elif (
+                "Bigeminy" in self.ecg_rhythm or "Trigeminy" in self.ecg_rhythm
+                or self.get_ailment_progress("[Vent] Bigeminy") > 0.001
+                or self.get_ailment_progress("[Vent] Trigeminy") > 0.001
+            ):
                 if self._in_pvc:
                     hr_rate *= 1.20
             elif "Sinus] Arrhythmia" in self.ecg_rhythm:
@@ -750,6 +1216,13 @@ class PhysioSim:
                 hr_rate = (self._effective_hr() / 60.0) * self.dt
             elif "VFib" in self.ecg_rhythm or "Asystole" in self.ecg_rhythm or "Torsades" in self.ecg_rhythm:
                 hr_rate = 0.0  # Doesn't use standard phase advancement
+
+            vtach_progress = self.get_rhythm_progress("[Vent] VTach")
+            if vtach_progress > 0.0 and not any(name in self.ecg_rhythm for name in ("VFib", "Asystole", "Torsades")):
+                vtach_rate = (self._effective_hr("[Vent] VTach") / 60.0) * self.dt
+                hr_rate = (hr_rate * (1.0 - vtach_progress)) + (vtach_rate * vtach_progress)
+            if self._rhythm_progress_contains("VFib", "Torsades", "Asystole") > 0.85:
+                hr_rate = 0.0
 
             old_phase = self.phase_ecg
             self.phase_ecg += hr_rate
@@ -768,8 +1241,7 @@ class PhysioSim:
                 self.etco2_breath_variation = random.uniform(1.0 - spread, 1.0 + spread)
 
             # Generate ECG
-            ecg_body = self._get_ecg_point(self.phase_ecg)
-            lead_body = self._derive_ecg_leads(ecg_body, self.phase_ecg)
+            lead_body = self._compose_ecg_leads(self.phase_ecg)
             display_lead = self.ecg_display_lead if self.ecg_display_lead in ECG_DISPLAY_LEADS else "Clean"
             clean_ecg = self._consolidated_ecg(lead_body)
             ecg_val = clean_ecg if display_lead == "Clean" else lead_body[display_lead]
@@ -778,15 +1250,26 @@ class PhysioSim:
             abp_body = self._abp_point(self.phase_ecg)
             co2_body = self._co2_point(self.phase_resp)
 
+            perfusion = self._perfusion_factor()
+            if perfusion < 1.0:
+                pleth_body = pleth_body * perfusion + random.gauss(0, 0.01) * (1.0 - perfusion)
+                abp_body = abp_body * perfusion + (20.0 + random.gauss(0, 1.0)) * (1.0 - perfusion)
+
             # R-wave detection (phase crossing)
             r_peak_phase = 0.38
-            if "PVCs" in self.ecg_rhythm and self._in_pvc:
+            if ("PVCs" in self.ecg_rhythm or self.get_ailment_progress("[Vent] PVCs") > 0.001) and self._in_pvc:
                 r_peak_phase = 0.35
-            elif ("Bigeminy" in self.ecg_rhythm or "Trigeminy" in self.ecg_rhythm) and self._in_pvc:
+            elif (
+                "Bigeminy" in self.ecg_rhythm or "Trigeminy" in self.ecg_rhythm
+                or self.get_ailment_progress("[Vent] Bigeminy") > 0.001
+                or self.get_ailment_progress("[Vent] Trigeminy") > 0.001
+            ) and self._in_pvc:
                 r_peak_phase = 0.35
-            elif "PACs" in self.ecg_rhythm and self._in_pac:
+            elif ("PACs" in self.ecg_rhythm or self.get_ailment_progress("[Atrial] PACs") > 0.001) and self._in_pac:
                 r_peak_phase = 0.32
             elif "VTach" in self.ecg_rhythm:
+                r_peak_phase = 0.30
+            elif vtach_progress > 0.5:
                 r_peak_phase = 0.30
             elif "3rd Deg" in self.ecg_rhythm:
                 r_peak_phase = 0.35
@@ -799,6 +1282,8 @@ class PhysioSim:
             r_crossed = old_phase < r_peak_phase <= self.phase_ecg
             if self._qrs_suppressed_this_cycle():
                 r_crossed = False
+            if self._rhythm_progress_contains("VFib", "Torsades", "Asystole") > 0.65:
+                r_crossed = False
             if r_crossed:
                 self.r_wave_detected = True
                 self._r_gate_until = self._artifact_time + 0.045
@@ -806,7 +1291,7 @@ class PhysioSim:
             # --- Calibration Noise Logic ---
             if self.cal_time > 0:
                 # Starting at 0 with jerking/noise that slowly settles
-                progress = 1.0 - (self.cal_time / 6.0) # 0 to 1
+                progress = 1.0 - (self.cal_time / max(0.001, self.cal_duration)) # 0 to 1
                 noise_amp = 0.0
                 if progress < 0.8:
                     # Random jerks/spikes
@@ -835,7 +1320,8 @@ class PhysioSim:
                 co2_val = co2_body
 
             sensor_leads = self._apply_lead_artifacts(sensor_leads)
-            ecg_val = clean_ecg if display_lead == "Clean" else sensor_leads[display_lead]
+            clean_sensor_ecg = self._consolidated_ecg(sensor_leads)
+            ecg_val = clean_sensor_ecg if display_lead == "Clean" else sensor_leads[display_lead]
 
             ecg_out.append(ecg_val)
             pleth_out.append(pleth_val)
@@ -877,7 +1363,7 @@ class PhysioSim:
         if "AFlutter" in self.ecg_rhythm:
             self._aflutter_hr = 300.0 / random.choice([2, 3, 4])
 
-        if "[Atrial] PACs" in self.ecg_rhythm:
+        if self._active_rhythm_or_ailment("[Atrial] PACs"):
             if self._in_pac:
                 self._in_pac = False
                 self._pac_interval = random.randint(5, 12)
@@ -888,18 +1374,18 @@ class PhysioSim:
             self._in_pac = False
 
         # PVCs: determine if next beat is a PVC
-        if "[Vent] PVCs" in self.ecg_rhythm:
+        if self._active_rhythm_or_ailment("[Vent] PVCs"):
             if self._in_pvc:
                 self._in_pvc = False
                 self._pvc_interval = random.randint(4, 10)
                 self._beat_counter = 0
             elif self._beat_counter >= self._pvc_interval:
                 self._in_pvc = True
-        elif "[Vent] Bigeminy" in self.ecg_rhythm:
+        elif self._active_rhythm_or_ailment("[Vent] Bigeminy"):
             self._in_pvc = self._beat_counter % 2 == 0
-        elif "[Vent] Trigeminy" in self.ecg_rhythm:
+        elif self._active_rhythm_or_ailment("[Vent] Trigeminy"):
             self._in_pvc = self._beat_counter % 3 == 0
-        elif "[Vent]" not in self.ecg_rhythm:
+        elif "[Vent]" not in self.ecg_rhythm and not any("[Vent]" in ailment for ailment in self.ecg_ailments):
             self._in_pvc = False
         
         # Organic variability for next beat

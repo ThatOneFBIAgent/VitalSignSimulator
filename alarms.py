@@ -86,6 +86,7 @@ class AudioSystem:
         self.alarm_med_sound = None
         self.alarm_high_sound = None
         self.beep_sound = None
+        self.audio_mode_sound = None
 
         if os.path.exists(med_path):
             self.alarm_med_sound = pygame.mixer.Sound(med_path)
@@ -110,6 +111,7 @@ class AudioSystem:
         self.ch_pulse = pygame.mixer.Channel(0)
         self.ch_alarm = pygame.mixer.Channel(1)
         self.ch_beep = pygame.mixer.Channel(2)
+        self.ch_audio_mode = pygame.mixer.Channel(3)
 
         self.alarm_playing = None   # "high" | "low" | None
         self.muted = False
@@ -166,11 +168,30 @@ class AudioSystem:
         if not self.ch_beep.get_busy():
             self.ch_beep.play(self.beep_sound)
 
+    def play_audio_mode_file(self, filepath):
+        self.stop_audio_mode_file()
+        if self.muted:
+            return False
+        try:
+            self.audio_mode_sound = pygame.mixer.Sound(filepath)
+            self.audio_mode_sound.set_volume(0.65)
+            self.ch_audio_mode.play(self.audio_mode_sound, loops=-1, fade_ms=200)
+            return True
+        except Exception:
+            self.audio_mode_sound = None
+            return False
+
+    def stop_audio_mode_file(self):
+        if self.ch_audio_mode.get_busy():
+            self.ch_audio_mode.fadeout(150)
+        self.audio_mode_sound = None
+
     def toggle_mute(self):
         self.muted = not self.muted
         if self.muted:
             self.ch_pulse.stop()
             self.stop_alarm()
+            self.stop_audio_mode_file()
         return self.muted
 
     def acknowledge(self):
@@ -245,6 +266,44 @@ class AlarmLogic:
                 return True
         return False
 
+    def _rhythm_state(self, sim):
+        rhythm = getattr(sim, "ecg_rhythm", "")
+        ailments = dict(getattr(sim, "ecg_ailments", {}) or {})
+
+        def progress(*needles):
+            value = 0.0
+            if any(needle in rhythm for needle in needles):
+                value = 1.0
+            for name, severity in ailments.items():
+                if any(needle in name for needle in needles):
+                    try:
+                        value = max(value, float(severity))
+                    except (TypeError, ValueError):
+                        pass
+            return max(0.0, min(1.0, value))
+
+        electrical_arrest = progress("VFib", "Torsades", "Asystole")
+        vtach = progress("VTach")
+        pea = progress("PEA")
+        ectopy = progress("PACs", "PVCs", "Bigeminy", "Trigeminy")
+        conduction = progress("Block", "WPW", "Long QT", "Hyperkalemia")
+        ischemia = progress("STEMI", "NSTEMI")
+        irregular = any(
+            token in rhythm
+            for token in ("AFib", "PACs", "PVCs", "Bigeminy", "Trigeminy", "Arrhythmia", "Block", "Torsades")
+        )
+        irregular = irregular or max(electrical_arrest, vtach, ectopy, conduction) >= 0.25
+        return {
+            "vfib": progress("VFib"),
+            "torsades": progress("Torsades"),
+            "asystole": progress("Asystole"),
+            "vtach": vtach,
+            "pea": pea,
+            "electrical_arrest": max(electrical_arrest, pea * 0.9),
+            "irregular": irregular,
+            "ischemia": ischemia,
+        }
+
     def update(self, sim, dt):
         """Evaluate alarm conditions with hysteresis. Returns priority or None."""
         self.t += dt
@@ -269,7 +328,8 @@ class AlarmLogic:
         w_co2_lo = self._check_high("etco2_lo", co2, self.thresholds["etco2_low"], False)
         w_temp_hi = self._check_high("temp_hi", temp, self.thresholds["temp_high"], True)
         w_temp_lo = self._check_high("temp_lo", temp, self.thresholds["temp_low"], False)
-        w_irreg = getattr(sim, "hr_irregular", False)
+        rhythm_state = self._rhythm_state(sim)
+        w_irreg = getattr(sim, "hr_irregular", False) or rhythm_state["irregular"]
 
         # 2. Pick Top Priority Message
         prev_priority = self.active_alarm
@@ -280,11 +340,22 @@ class AlarmLogic:
         is_vfib = False
         is_asystole = False
         is_apnea = False
-        if hr == 0.0:
+        ecg_amp = getattr(sim, "ecg_amplitude", 0.0)
+        if rhythm_state["vfib"] >= 0.65 or rhythm_state["torsades"] >= 0.75:
+            is_vfib = True
+        elif rhythm_state["vtach"] >= 0.75 and (hr >= self.thresholds["hr_high"] or ecg_amp > 0.6):
+            is_vfib = True
+        elif hr == 0.0:
             if getattr(sim, "ecg_amplitude", 0.0) > 0.4:
                 is_vfib = True
             else:
                 is_asystole = True
+
+        if rhythm_state["asystole"] >= 0.9:
+            is_asystole = True
+            is_vfib = False
+        elif rhythm_state["pea"] >= 0.75 and hr <= self.thresholds["hr_crit_low"]:
+            is_asystole = True
                 
         if rr < 2.0:
             is_apnea = True
@@ -298,7 +369,10 @@ class AlarmLogic:
             if self.vfib_timer < 2.0:
                 priority, msg = "warning_vfib", "** CHECK V-FIB **"
             else:
-                priority, msg = "high", "*** V-FIB / V-TACH ***"
+                if rhythm_state["vtach"] >= 0.75 and rhythm_state["vfib"] < 0.65:
+                    priority, msg = "high", "*** V-TACH ***"
+                else:
+                    priority, msg = "high", "*** V-FIB / V-TACH ***"
         elif is_asystole:
             priority, msg = "high", "*** ASYSTOLE ***"
         elif is_apnea:
@@ -316,7 +390,10 @@ class AlarmLogic:
             elif w_bp_lo: priority, msg = "low", f"ABP SYS {int(sys)} LOW"
             elif w_co2_hi: priority, msg = "low", f"EtCO2 {int(co2)} HIGH"
             elif w_co2_lo: priority, msg = "low", f"EtCO2 {int(co2)} LOW"
+            elif rhythm_state["vtach"] >= 0.35: priority, msg = "warning_irreg", "*** CHECK V-TACH ***"
+            elif rhythm_state["vfib"] >= 0.25 or rhythm_state["torsades"] >= 0.25: priority, msg = "warning_vfib", "** CHECK V-FIB **"
             elif w_irreg: priority, msg = "warning_irreg", "*** CHECK IRREG. RHYTHM ***"
+            elif rhythm_state["ischemia"] >= 0.5: priority, msg = "warning_irreg", "*** CHECK ST CHANGES ***"
             elif w_temp_hi or w_temp_lo: priority, msg = "warning_vitals", f"TEMP {temp:.1f} OUT OF RANGE"
 
         # Priority Debouncing (prevents audio restarting / UI stuttering)

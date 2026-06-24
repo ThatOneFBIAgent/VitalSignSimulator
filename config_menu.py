@@ -4,7 +4,7 @@ Opened with TAB, navigated with arrow keys.
 Sections: Vitals | Alarms | Display | Presets
 """
 import pygame
-from simulation import ECG_RHYTHMS, RESP_PATTERNS, ECG_DISPLAY_LEADS
+from simulation import ECG_RHYTHMS, RESP_PATTERNS, ECG_DISPLAY_LEADS, ECG_AILMENTS
 
 # ─── Color constants ───
 C_BG       = (18, 18, 24, 220)
@@ -150,6 +150,14 @@ class ConfigMenu:
             getter=lambda: s.ecg_rhythm,
             setter=lambda v: setattr(s, 'ecg_rhythm', v),
         ))
+        for rhythm in ECG_AILMENTS:
+            label = rhythm.replace("[", "").replace("]", "").replace("  ", " ")
+            key = "ailment_" + "".join(ch.lower() if ch.isalnum() else "_" for ch in rhythm).strip("_")
+            items.append(ConfigItem(
+                key, f"{label} Severity", 5, 100, 5, ".0f",
+                getter=lambda r=rhythm: s.get_ailment_progress(r) * 100.0,
+                setter=lambda v, r=rhythm: s.set_ailment_progress(r, v / 100.0),
+            ))
         items.append(CycleItem(
             "ecg_display_lead", "Displayed ECG Lead", ECG_DISPLAY_LEADS,
             getter=lambda: s.ecg_display_lead,
@@ -395,12 +403,21 @@ class ConfigMenu:
         ))
         
         # Play/Stop
+        def can_play_routine():
+            return not self.monitor or getattr(self.monitor, "patient_hooked_up", True)
+
         def get_play_label():
+            if not can_play_routine():
+                return "[ HOOK UP FIRST ]"
             return "[ STOP ]" if rm.is_playing else "[ PLAY ]"
+
+        def toggle_play():
+            if can_play_routine():
+                rm.toggle_play()
             
         items.append(ActionItem(
             "play_routine", "Playback Control",
-            action_fn=lambda: rm.toggle_play(),
+            action_fn=toggle_play,
             get_label_fn=get_play_label
         ))
         return items
